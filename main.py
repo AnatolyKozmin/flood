@@ -8,6 +8,8 @@ from handlers.command_mafia import mafia_router
 from handlers.command_people import people_router
 from handlers.command_quotes import quotes_router
 from handlers.command_with_random import random_router
+from handlers.command_info import info_router
+from handlers.command_tarot import tarot_router
 from database.engine import init_db, close_db
 
 load_dotenv()
@@ -20,6 +22,8 @@ dp.include_router(people_router)
 dp.include_router(random_router)
 dp.include_router(quotes_router)
 dp.include_router(mafia_router)
+dp.include_router(info_router)
+dp.include_router(tarot_router)
 
 async def main():
     await init_db()    
