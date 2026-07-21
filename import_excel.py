@@ -1,94 +1,93 @@
 import asyncio
 import openpyxl
 from datetime import datetime
+
+from sqlalchemy import delete
+
 from database.engine import async_session_maker, init_db
 from database.dao import ActivistsDAO
+from database.models import Activists
+
+
+def _clean_str(value) -> str:
+    """Строка без мусора. Числа из Excel приходят как float (89963479923.0) —
+    убираем хвост '.0', чтобы телефон/студак не портились."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _to_int(value) -> int:
+    try:
+        if value is None or value == "":
+            return 0
+        return int(float(value))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _to_birthday(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.strptime(value.strip(), "%d.%m.%Y")
+        except ValueError:
+            return None
+    return None
 
 
 async def import_from_excel(excel_path: str):
-    """Импортирует данные из Excel в базу данных"""
-    
-    # Инициализируем БД
+    """Заливает активистов из Excel в БД, ЗАМЕНЯЯ прежний состав.
+
+    Структура файла active_summer_2026.xlsx (по индексам столбцов):
+      0 Фио · 1 Почта · 2 Студенческий · 3 Группа · 4 Телефон · 5 Телеграм ·
+      6 Размер · 7 Другие_подразделения · 8 День_рождения · 9 Ссылка_в_вк ·
+      10 Направление
+    Колонки «В_активе» в этом файле нет — считаем всех активными.
+    """
     await init_db()
-    
-    # Загружаем файл Excel
+
     workbook = openpyxl.load_workbook(excel_path)
     sheet = workbook.active
-    
-    # Маппинг столбцов по твоему Excel (столбик A и дальше)
-    # Заголовки: Фио, Почта, Студенческий билет, Группа, Телефон, Телеграм, Размер, Другие_подразделения, День_рождения, Ссылка_в_вк, В_активе, Направление
-    columns = [
-        'fio',              # A - Фио
-        'email',            # B - Почта
-        'studak',           # C - Студенческий билет
-        'group',            # D - Группа
-        'phone',            # E - Телефон
-        'tg_username',      # F - Телеграм
-        'clothes_size',     # G - Размер
-        'someone_div',      # H - Другие_подразделения
-        'birthday',         # I - День_рождения
-        'ik_div',           # J - Ссылка_в_вк (переделаю в направление)
-        'is_active',        # K - В_активе
-        'ik_div'            # L - Направление (настоящее направление)
-    ]
-    
+
     async with async_session_maker() as session:
         dao = ActivistsDAO(session)
-        
-        # Начинаем со второй строки (первая - заголовок)
+
+        # Замена состава: чистим старых активистов. Цитаты (таблица quotes) не трогаем.
+        await session.execute(delete(Activists))
+        await session.commit()
+
+        imported = 0
         for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+            # Пропускаем пустые строки (в файле есть пустые хвосты) и строки без ФИО.
+            if not row or not row[0]:
+                continue
             try:
-                # Проверяем, не пустая ли строка
-                if not any(row):
-                    continue
-                
-                # Создаём словарь для активиста
-                activist_data = {}
-                
-                for col_idx, col_name in enumerate(columns):
-                    value = row[col_idx]
-                    
-                    if value is None:
-                        value = ""
-                    
-                    # Преобразуем типы данных
-                    if col_name == 'studak':
-                        try:
-                            activist_data[col_name] = int(value) if value else 0
-                        except (ValueError, TypeError):
-                            activist_data[col_name] = 0
-                    elif col_name == 'clothes_size':
-                        try:
-                            activist_data[col_name] = int(value) if value else 0
-                        except (ValueError, TypeError):
-                            activist_data[col_name] = 0
-                    elif col_name == 'birthday':
-                        if isinstance(value, str) and value.strip():
-                            try:
-                                activist_data[col_name] = datetime.strptime(value, '%d.%m.%Y').date()
-                            except:
-                                activist_data[col_name] = None
-                        elif isinstance(value, datetime):
-                            activist_data[col_name] = value.date()
-                        else:
-                            activist_data[col_name] = None
-                    elif col_name == 'is_active':
-                        activist_data[col_name] = bool(value) if value else False
-                    else:
-                        activist_data[col_name] = str(value).strip()
-                
-                # Создаём запись в БД
+                activist_data = {
+                    "fio": _clean_str(row[0]),
+                    "email": _clean_str(row[1]),
+                    "studak": _to_int(row[2]),
+                    "group": _clean_str(row[3]),
+                    "phone": _clean_str(row[4]),
+                    "tg_username": _clean_str(row[5]),
+                    "clothes_size": _clean_str(row[6]),   # 'S/M', 'M' и т.п. — как есть
+                    "someone_div": _clean_str(row[7]),
+                    "birthday": _to_birthday(row[8]),
+                    "ik_div": _clean_str(row[10]),        # Направление
+                    "is_active": True,                    # колонки «В_активе» в файле нет
+                }
                 await dao.create(**activist_data)
-                print(f"✅ Строка {row_idx}: {activist_data.get('fio')} импортирована")
-            
+                imported += 1
+                print(f"✅ Строка {row_idx}: {activist_data['fio']} импортирована")
             except Exception as e:
                 print(f"❌ Ошибка в строке {row_idx}: {e}")
-    
-    print(f"\n🎉 Импорт завершён!")
+
+    print(f"\n🎉 Импорт завершён! Загружено активистов: {imported}")
 
 
 if __name__ == "__main__":
-    # Укажи путь к файлу Excel
-    excel_file = "activ.xlsx"  # Измени на свой путь
-    
+    excel_file = "active_summer_2026.xlsx"
     asyncio.run(import_from_excel(excel_file))

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from database.engine import async_session_maker
 from database.models import Activists
-from utils.helpers import mention, format_activist, first_last
+from utils.helpers import mention, format_activist
 from utils.format import DIVIDER, field, format_phone
 
 
@@ -68,17 +68,17 @@ async def _find_activists(query: str) -> list:
 
 def _render_activist(activist) -> str:
     e = html.escape
-    name = e(first_last(activist.fio)) if activist.fio else "Активист"
-    tag = mention(activist.tg_username)
-    header = f"👤 <b>{name}</b>" + (f"  ({e(tag)})" if tag else "")
+    fio = e(activist.fio.strip()) if activist.fio else "Активист"
+    header = f"👤 <b>{fio}</b>"
 
     # Пустые поля показываем прочерком — чтобы структура анкеты была видна целиком.
     body = [
         field("День рождения", _birthday(activist.birthday), "🎂", placeholder="—"),
         field("Направление", activist.ik_div, "🧭", placeholder="—"),
         field("Группа", activist.group, "🎓", placeholder="—"),
-        field("Телефон", format_phone(activist.phone), "📞", code=True, placeholder="—"),
+        field("Номер телефона", format_phone(activist.phone), "📞", code=True, placeholder="—"),
         field("Почта", activist.email, "✉️", placeholder="—"),
+        field("Телеграм", mention(activist.tg_username), "✈️", placeholder="—"),
         field("Размер одежды", activist.clothes_size, "👕", placeholder="—"),
         field("Другие подразделения", activist.someone_div, "🏢", placeholder="—"),
     ]
@@ -93,9 +93,26 @@ def _render_activist(activist) -> str:
 @info_router.message(F.text.startswith(CMD))
 async def info_cmd(message: Message):
     query = message.text[len(CMD):].strip()
+
+    # !инфо в ответ на сообщение (без явного тега/фамилии) — берём его автора.
+    reply = message.reply_to_message
+    if not query and reply and reply.from_user:
+        author = reply.from_user
+        if author.username:
+            query = author.username
+        else:
+            name = html.escape(author.full_name)
+            await message.reply(
+                f"У {name} нет @username — по нему не найти. "
+                "Попробуй по фамилии: <code>!инфо Фамилия</code>",
+                parse_mode="HTML",
+            )
+            return
+
     if not query:
         await message.reply(
-            "Укажи тег или фамилию активиста: <code>!инфо @username</code> или <code>!инфо Иванов</code>",
+            "Укажи тег или фамилию активиста, либо ответь <code>!инфо</code> на его сообщение.\n"
+            "Например: <code>!инфо @username</code> или <code>!инфо Иванов</code>",
             parse_mode="HTML",
         )
         return
