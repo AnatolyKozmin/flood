@@ -62,8 +62,16 @@ class ActivistsDAO(BaseDAO):
 
 
     async def get_by_username(self, tg_username: str):
+        # Ники в базе хранятся вразнобой: часть с '@', часть без, разный регистр.
+        # Telegram отдаёт username без '@' — нормализуем обе стороны, иначе
+        # автор не находится и в цитатах вместо ФИО показывается ник.
+        normalized = (tg_username or "").strip().lstrip("@").lower()
+        if not normalized:
+            return None
         res = await self.session.execute(
-            select(self.model).where(self.model.tg_username == tg_username)
+            select(self.model).where(
+                func.lower(func.replace(self.model.tg_username, "@", "")) == normalized
+            )
         )
         return res.scalar_one_or_none()
 
