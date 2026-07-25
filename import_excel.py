@@ -89,5 +89,5 @@ async def import_from_excel(excel_path: str):
 
 
 if __name__ == "__main__":
-    excel_file = "active_summer_2026.xlsx"
+    excel_file = "active_summer_2026_1.xlsx"
     asyncio.run(import_from_excel(excel_file))

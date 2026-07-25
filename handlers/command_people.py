@@ -5,7 +5,7 @@ from aiogram.types import Message
 
 from database.engine import async_session_maker
 from database.dao import ActivistsDAO
-from utils.helpers import format_activist
+from utils.helpers import format_activist, moscow_today
 
 
 people_router = Router()
@@ -24,7 +24,7 @@ async def who_cmd(message: Message):
 
 @people_router.message(F.text.startswith('!сантехник дня'))
 async def random_plumber_cmd(message: Message):
-    today = date.today()
+    today = moscow_today()
     if _plumber_last.get(message.chat.id) == today:
         await message.answer("Сегодня уже выбирали сантехника дня")
         return

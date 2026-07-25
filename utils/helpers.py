@@ -1,3 +1,16 @@
+from datetime import datetime, timezone, timedelta
+
+# Москва — фиксированный UTC+3 (перехода на летнее время нет с 2014 г.).
+# Через смещение, а не ZoneInfo, чтобы не зависеть от tzdata в slim-образе.
+MSK = timezone(timedelta(hours=3))
+
+
+def moscow_today():
+    """Текущая дата по Москве. Нужна, чтобы «день» (сантехник, расклад)
+    сбрасывался в 00:00 МСК, а не в 00:00 по времени сервера (UTC)."""
+    return datetime.now(MSK).date()
+
+
 def first_last(fio: str) -> str:
     """'Фамилия Имя Отчество' → 'Имя Фамилия'"""
     parts = fio.strip().split()

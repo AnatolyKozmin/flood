@@ -9,6 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 
 from utils.format import DIVIDER, rating_short
+from utils.helpers import moscow_today
 
 
 tarot_router = Router()
@@ -75,6 +76,6 @@ async def tarot_cmd(message: Message):
     user = message.from_user
     if user is None:
         return
-    today = date.today()
+    today = moscow_today()
     card = _pick_card_for(user.id, today)
     await message.answer(_format_card(card, today), parse_mode="HTML")
