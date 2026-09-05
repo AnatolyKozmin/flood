@@ -6,7 +6,7 @@ activists — то есть анкета из лички и импорт из Ex
 """
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -98,3 +98,17 @@ class ProfileDAO:
         await self.session.execute(stmt)
         await self.session.commit()
         return activist
+
+    async def delete(self, activist_id: int, tg_id: int) -> None:
+        """Убрать анкету из базы вместе со связкой.
+
+        Цитаты человека не трогаем: они принадлежат чату, а не анкете, и
+        !мудрость по ним продолжит работать.
+        """
+        await self.session.execute(
+            sa_delete(ActivistLink).where(ActivistLink.tg_id == tg_id)
+        )
+        await self.session.execute(
+            sa_delete(Activists).where(Activists.id == activist_id)
+        )
+        await self.session.commit()
