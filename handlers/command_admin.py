@@ -383,17 +383,36 @@ class OwnerOnly(BaseFilter):
         return chat.type == "private" and event.from_user.id == owner_id()
 
 
+async def _who(bot: Bot, tg_id: int, known: str | None = None) -> str:
+    """Как показать человека: @тег, если он вообще известен, иначе id.
+
+    Тег спрашиваем у телеграма: он мог смениться с момента добавления, а
+    у добавленных по числовому id его изначально нет. Не вышло —
+    показываем id, это всегда честно.
+    """
+    try:
+        chat = await bot.get_chat(tg_id)
+        if chat.username:
+            return f"@{html.escape(chat.username)}"
+    except TelegramAPIError:
+        pass
+    if known:
+        return f"@{html.escape(known.lstrip('@'))}"
+    return f"<code>{tg_id}</code>"
+
+
 async def _admins_screen(target: CallbackQuery) -> None:
     async with async_session_maker() as session:
         admins = await AdminDAO(session).all()
 
+    owner = await _who(target.bot, owner_id())
     lines = ["👥 <b>Кто имеет доступ</b>", DIVIDER,
-             f"👑 Владелец — <code>{owner_id()}</code> <i>(из .env, снять нельзя)</i>"]
+             f"👑 Владелец — {owner} <i>(из .env, снять нельзя)</i>"]
     rows = []
     for admin in admins:
-        tag = f"@{html.escape(admin.username)}" if admin.username else "без тега"
+        who = await _who(target.bot, admin.tg_id, admin.username)
         title = f" · {html.escape(admin.title)}" if admin.title else ""
-        lines.append(f"• {tag} — <code>{admin.tg_id}</code>{title}")
+        lines.append(f"• {who}{title}")
         rows.append([_btn(f"🗑 Убрать {admin.username or admin.tg_id}", f"del:{admin.tg_id}")])
     if not admins:
         lines.append("<i>Больше никого. Добавь кнопкой ниже.</i>")
