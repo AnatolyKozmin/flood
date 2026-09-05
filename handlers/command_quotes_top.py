@@ -183,7 +183,8 @@ async def top_quotes(message: Message):
 async def top_battle(message: Message):
     async with async_session_maker() as session:
         dao = BattleDAO(session)
-        board = await dao.top_by_wins(TOP_LIMIT)
+        board = await dao.top_by_points(TOP_LIMIT)
+        played = await dao.battles_played()
         if not board:
             await message.reply(
                 "Батлов ещё не было. Запусти командой <code>!батл</code>.",
@@ -198,13 +199,17 @@ async def top_battle(message: Message):
     pngs = await _render_all(message.bot, [quotes[row[0]] for row in board])
     authors = await asyncio.gather(*(quote_author(quotes[row[0]]) for row in board))
 
-    lines = ["⚔️ <b>Топ по батлам</b>", DIVIDER]
-    for place, ((_, wins, shown), author) in enumerate(zip(board, authors), start=1):
+    lines = ["⚔️ <b>Топ цитат по батлам</b>", DIVIDER]
+    for place, ((_, points, _shown), author) in enumerate(zip(board, authors), start=1):
         medal = MEDALS.get(place, f"{place}.")
         lines.append(
-            f"{medal} {html.escape(author)} — {wins} "
-            f"{plural(wins, 'победа', 'победы', 'побед')} из {shown}"
+            f"{medal} {html.escape(author)} — {points} "
+            f"{plural(points, 'очко', 'очка', 'очков')}"
         )
+    lines += ["", "<i>Очко за каждую выигранную пару. Поэтому цитата, которая "
+                  "раз за разом остаётся второй, обгоняет ту, что один раз "
+                  f"взяла первое место.</i>",
+              f"<i>Сыграно {played} {plural(played, 'батл', 'батла', 'батлов')}.</i>"]
 
     await _send_album(message, pngs, _trim("\n".join(lines)))
     await _drop_note(note)

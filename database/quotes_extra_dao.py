@@ -170,25 +170,38 @@ class BattleDAO:
         rows = (await self.session.execute(query)).all()
         return [(row.winner_id, int(row.n)) for row in rows]
 
-    async def top_by_wins(self, limit: int = 3) -> list[tuple[int, int, int]]:
-        """[(quote_id, побед, сравнений), ...] — прямо из сыгранных раундов.
+    async def top_by_points(self, limit: int = 3) -> list[tuple[int, int, int]]:
+        """[(quote_id, очков, сравнений), ...] — по накопленным очкам.
 
-        Отдельной таблицы с рейтингом больше нет: battle_rounds и так хранит
-        каждый выбор, а раундов — десяток на сессию, так что считать в
-        питоне дешевле, чем поддерживать вторую копию тех же данных.
+        Очко — за каждую выигранную пару, а не за победу в батле целиком.
+        Разница принципиальная: цитата, которая раз за разом остаётся второй,
+        набирает больше, чем та, что один раз взяла первое место. Победы в
+        сессиях (session_scores) в общий зачёт не идут — они только объявляют
+        победителя конкретного батла.
+
+        Считаем по battle_rounds: там уже лежит каждый выбор, а раундов
+        десяток на сессию — дешевле сложить в питоне, чем держать вторую
+        копию тех же данных.
         """
         rows = (await self.session.execute(
             select(BattleRound.left_id, BattleRound.right_id, BattleRound.winner_id)
         )).all()
 
-        wins: dict[int, int] = {}
+        points: dict[int, int] = {}
         shown: dict[int, int] = {}
         for left, right, winner in rows:
             shown[left] = shown.get(left, 0) + 1
             shown[right] = shown.get(right, 0) + 1
-            wins[winner] = wins.get(winner, 0) + 1
+            points[winner] = points.get(winner, 0) + 1
 
-        # По числу побед. Цитата с одной случайной победой не обгонит ту,
-        # что выиграла семь раз, — а это ровно то, чего хотелось от рейтинга.
-        ranked = sorted(shown, key=lambda q: (-wins.get(q, 0), -shown[q], q))
-        return [(q, wins.get(q, 0), shown[q]) for q in ranked[:limit]]
+        # При равенстве очков выше та, которой хватило меньше сравнений:
+        # одинаковый счёт с меньшего числа попыток — сильнее.
+        ranked = sorted(shown, key=lambda q: (-points.get(q, 0), shown[q], q))
+        return [(q, points.get(q, 0), shown[q]) for q in ranked[:limit]]
+
+    async def battles_played(self) -> int:
+        """Сколько батлов доиграли до конца."""
+        query = select(func.count()).select_from(BattleSession).where(
+            BattleSession.finished_at.is_not(None)
+        )
+        return int((await self.session.execute(query)).scalar_one() or 0)
