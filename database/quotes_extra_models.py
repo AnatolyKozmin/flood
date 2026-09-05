@@ -6,7 +6,7 @@ init_db() зовёт Base.metadata.create_all(), а сюда мы попадае
 """
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, Index, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.models import Base
@@ -30,21 +30,6 @@ class QuoteVote(Base):
     quote_id: Mapped[int] = mapped_column(Integer)
     user_id: Mapped[int] = mapped_column(BigInteger)
     voted_at: Mapped[datetime] = mapped_column(DateTime)
-
-
-class QuoteRating(Base):
-    """Рейтинг Эло по итогам батлов — отдельно от сердечек.
-
-    Сердечко значит «нравится», батл — «нравится больше вот этой». Это разные
-    метрики, поэтому и храним раздельно, в один рейтинг не мешаем.
-    """
-
-    __tablename__ = "quote_ratings"
-
-    quote_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
-    rating: Mapped[float] = mapped_column(Float, default=1000.0)
-    wins: Mapped[int] = mapped_column(Integer, default=0)
-    battles: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class BattleSession(Base):

@@ -7,13 +7,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Quotes
-from database.quotes_extra_models import (
-    BattleRound, BattleSession, QuoteRating, QuoteVote,
-)
+from database.quotes_extra_models import BattleRound, BattleSession, QuoteVote
 from utils.helpers import MSK
 
-ELO_START = 1000.0
-ELO_K = 24.0
 BATTLE_ROUNDS = 10
 
 
@@ -147,8 +143,8 @@ class BattleDAO:
         battle.seen = f"{battle.seen},{key}" if battle.seen else key
         await self.session.commit()
 
-    async def record(self, battle: BattleSession, winner_id: int, loser_id: int) -> None:
-        """Записать выбор, сдвинуть раунд и пересчитать Эло обеим цитатам."""
+    async def record(self, battle: BattleSession, winner_id: int) -> None:
+        """Записать выбор и сдвинуть раунд."""
         self.session.add(BattleRound(
             session_id=battle.id,
             left_id=battle.left_id,
@@ -157,30 +153,7 @@ class BattleDAO:
             decided_at=_now(),
         ))
         battle.round += 1
-        await self._update_elo(winner_id, loser_id)
         await self.session.commit()
-
-    async def _rating(self, quote_id: int) -> QuoteRating:
-        rating = await self.session.get(QuoteRating, quote_id)
-        if rating is None:
-            rating = QuoteRating(quote_id=quote_id, rating=ELO_START, wins=0, battles=0)
-            self.session.add(rating)
-        return rating
-
-    async def _update_elo(self, winner_id: int, loser_id: int) -> None:
-        """Эло: победа над сильной цитатой весит больше, чем над слабой.
-
-        Поэтому цитата с одной случайной победой не улетает на первое место,
-        как было бы при подсчёте голой доли побед.
-        """
-        win = await self._rating(winner_id)
-        lose = await self._rating(loser_id)
-        expected_win = 1 / (1 + 10 ** ((lose.rating - win.rating) / 400))
-        win.rating += ELO_K * (1 - expected_win)
-        lose.rating -= ELO_K * (1 - expected_win)
-        win.wins += 1
-        win.battles += 1
-        lose.battles += 1
 
     async def finish(self, battle: BattleSession) -> None:
         battle.finished_at = _now()
@@ -197,13 +170,25 @@ class BattleDAO:
         rows = (await self.session.execute(query)).all()
         return [(row.winner_id, int(row.n)) for row in rows]
 
-    async def top_elo(self, limit: int = 10) -> list[tuple[int, float, int, int]]:
-        """[(quote_id, рейтинг, побед, батлов), ...] — только те, кто участвовал."""
-        query = (
-            select(QuoteRating)
-            .where(QuoteRating.battles > 0)
-            .order_by(QuoteRating.rating.desc())
-            .limit(limit)
-        )
-        rows = (await self.session.execute(query)).scalars().all()
-        return [(r.quote_id, r.rating, r.wins, r.battles) for r in rows]
+    async def top_by_wins(self, limit: int = 3) -> list[tuple[int, int, int]]:
+        """[(quote_id, побед, сравнений), ...] — прямо из сыгранных раундов.
+
+        Отдельной таблицы с рейтингом больше нет: battle_rounds и так хранит
+        каждый выбор, а раундов — десяток на сессию, так что считать в
+        питоне дешевле, чем поддерживать вторую копию тех же данных.
+        """
+        rows = (await self.session.execute(
+            select(BattleRound.left_id, BattleRound.right_id, BattleRound.winner_id)
+        )).all()
+
+        wins: dict[int, int] = {}
+        shown: dict[int, int] = {}
+        for left, right, winner in rows:
+            shown[left] = shown.get(left, 0) + 1
+            shown[right] = shown.get(right, 0) + 1
+            wins[winner] = wins.get(winner, 0) + 1
+
+        # По числу побед. Цитата с одной случайной победой не обгонит ту,
+        # что выиграла семь раз, — а это ровно то, чего хотелось от рейтинга.
+        ranked = sorted(shown, key=lambda q: (-wins.get(q, 0), -shown[q], q))
+        return [(q, wins.get(q, 0), shown[q]) for q in ranked[:limit]]

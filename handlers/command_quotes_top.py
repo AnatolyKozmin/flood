@@ -29,7 +29,7 @@ from utils.stats import plural
 quotes_top_router = Router()
 
 VOTE_CB = "qv"
-TOP_LIMIT = 10          # столько же, сколько влезает в один альбом
+TOP_LIMIT = 3           # три карточки — ровно столько, сколько читается с ходу
 CAPTION_LIMIT = 1024    # жёсткий лимит телеграма на подпись к медиа
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
@@ -183,7 +183,7 @@ async def top_quotes(message: Message):
 async def top_battle(message: Message):
     async with async_session_maker() as session:
         dao = BattleDAO(session)
-        board = await dao.top_elo(TOP_LIMIT)
+        board = await dao.top_by_wins(TOP_LIMIT)
         if not board:
             await message.reply(
                 "Батлов ещё не было. Запусти командой <code>!батл</code>.",
@@ -199,15 +199,12 @@ async def top_battle(message: Message):
     authors = await asyncio.gather(*(quote_author(quotes[row[0]]) for row in board))
 
     lines = ["⚔️ <b>Топ по батлам</b>", DIVIDER]
-    for place, ((_, rating, wins, battles), author) in enumerate(zip(board, authors), start=1):
+    for place, ((_, wins, shown), author) in enumerate(zip(board, authors), start=1):
         medal = MEDALS.get(place, f"{place}.")
         lines.append(
-            f"{medal} {html.escape(author)} — {round(rating)} "
-            f"({wins} из {battles})"
+            f"{medal} {html.escape(author)} — {wins} "
+            f"{plural(wins, 'победа', 'победы', 'побед')} из {shown}"
         )
-    total = sum(row[3] for row in board)
-    lines += ["", f"<i>Всего {total} {plural(total, 'сравнение', 'сравнения', 'сравнений')}. "
-                  f"Рейтинг Эло: победа над сильной цитатой весит больше</i>"]
 
     await _send_album(message, pngs, _trim("\n".join(lines)))
     await _drop_note(note)

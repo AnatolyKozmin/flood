@@ -142,7 +142,7 @@ async def _finish(bot: Bot, battle, dao: BattleDAO) -> None:
         f"Цитата <b>{html.escape(author)}</b> — {wins} "
         f"{plural(wins, 'победа', 'победы', 'побед')} "
         f"из {rounds} {plural(rounds, 'сравнения', 'сравнений', 'сравнений')}\n\n"
-        f"<i>Общий рейтинг: <code>!топ батл</code></i>"
+        f"<i>Кто побеждает чаще всех: <code>!топ батл</code></i>"
     )
     await _swap(
         bot, battle, dao,
@@ -194,13 +194,12 @@ async def cb_choice(call: CallbackQuery):
             return
 
         winner_id = battle.left_id if side == "u" else battle.right_id
-        loser_id = battle.right_id if side == "u" else battle.left_id
-        if winner_id is None or loser_id is None:
+        if winner_id is None:
             await call.answer()
             return
 
         await call.answer("Принято")
-        await dao.record(battle, winner_id, loser_id)
+        await dao.record(battle, winner_id)
 
         if battle.round >= BATTLE_ROUNDS:
             await _finish(call.bot, battle, dao)
