@@ -9,6 +9,7 @@ from database.engine import async_session_maker
 from database.models import Activists
 from utils.helpers import mention, format_activist
 from utils.format import DIVIDER, field, format_phone
+from utils.stats import activist_stats_line
 
 
 info_router = Router()
@@ -66,7 +67,7 @@ async def _find_activists(query: str) -> list:
         return [a for a in result.scalars().all() if _matches(a, needle)]
 
 
-def _render_activist(activist) -> str:
+def _render_activist(activist, stats_line: str | None = None) -> str:
     e = html.escape
     fio = e(activist.fio.strip()) if activist.fio else "Активист"
     header = f"👤 <b>{fio}</b>"
@@ -82,6 +83,9 @@ def _render_activist(activist) -> str:
         field("Размер одежды", activist.clothes_size, "👕", placeholder="—"),
         field("Другие подразделения", activist.someone_div, "🏢", placeholder="—"),
     ]
+    # Счётчик сообщений — только если человек писал в этом чате (см. utils/stats.py).
+    if stats_line:
+        body.append(stats_line)
     status = "✅ состоит в активе" if activist.is_active else "🚫 не состоит в активе"
 
     lines = [header, DIVIDER]
@@ -133,4 +137,5 @@ async def info_cmd(message: Message):
         await message.answer(f"{header}\n{listing}{hint}", parse_mode="HTML")
         return
 
-    await message.answer(_render_activist(activists[0]), parse_mode="HTML")
+    stats_line = await activist_stats_line(message.chat.id, activists[0])
+    await message.answer(_render_activist(activists[0], stats_line), parse_mode="HTML")

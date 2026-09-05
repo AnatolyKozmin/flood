@@ -10,6 +10,10 @@ from handlers.command_quotes import quotes_router
 from handlers.command_with_random import random_router
 from handlers.command_info import info_router
 from handlers.command_tarot import tarot_router
+from handlers.command_top import top_router
+from handlers.command_profile import profile_router
+from handlers.command_all import all_router
+from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from database.engine import init_db, close_db
 
 load_dotenv()
@@ -17,6 +21,9 @@ load_dotenv()
 bot = Bot(token=os.getenv('TOKEN'))
 dp = Dispatcher()
 
+# Анкета в личке идёт первой: пока человек отвечает на вопросы, её
+# FSM-хендлер должен ловить сообщения раньше остальных команд.
+dp.include_router(profile_router)
 dp.include_router(help_router)
 dp.include_router(people_router)
 dp.include_router(random_router)
@@ -24,13 +31,20 @@ dp.include_router(quotes_router)
 dp.include_router(mafia_router)
 dp.include_router(info_router)
 dp.include_router(tarot_router)
+dp.include_router(top_router)
+dp.include_router(all_router)
+
+# Считает сообщения для !топ и !стата. outer — значит срабатывает раньше
+# фильтров: считаются все сообщения, а не только те, что попали в команды.
+dp.message.outer_middleware(MessageCounterMiddleware())
 
 async def main():
-    await init_db()    
+    await init_db()
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
+        await flush_stats()  # дописать счётчики, что не успели уйти в базу
         await close_db()
     
 
