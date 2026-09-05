@@ -204,9 +204,9 @@ async def top_battle(message: Message):
         medal = MEDALS.get(place, f"{place}.")
         lines.append(
             f"{medal} {html.escape(author)} — {points} "
-            f"{plural(points, 'очко', 'очка', 'очков')}"
+            f"{plural(points, 'балл', 'балла', 'баллов')}"
         )
-    lines += ["", "<i>Очко за каждую выигранную пару. Поэтому цитата, которая "
+    lines += ["", "<i>Балл за каждую выигранную пару. Поэтому цитата, которая "
                   "раз за разом остаётся второй, обгоняет ту, что один раз "
                   f"взяла первое место.</i>",
               f"<i>Сыграно {played} {plural(played, 'батл', 'батла', 'батлов')}.</i>"]
