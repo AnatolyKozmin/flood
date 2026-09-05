@@ -1,9 +1,15 @@
 """!батл — попарное сравнение цитат.
 
 Показываем две цитаты одной картинкой (одна над другой) и две кнопки:
-⬆️ верхняя / ⬇️ нижняя. Выбрал — картинка и кнопки перерисовываются на
-следующую пару, и так 10 раундов, потом итог. Весь батл живёт в одном
-сообщении: правим у него медиа, подпись и клавиатуру.
+⬆️ верхняя / ⬇️ нижняя. Выбрал — старая картинка удаляется, генерится
+следующая пара и приходит новым сообщением. И так 10 раундов, потом итог.
+В чате всегда висит ровно одна картинка батла.
+
+Почему не редактирование на месте: во флуде отредактированное сообщение
+остаётся там, где его отправили, и через десяток чужих реплик до кнопок
+надо доскроллить. Новое сообщение всегда приходит вниз. Сначала шлём
+новое, потом удаляем старое — чтобы между раундами не было пустоты, пока
+рисуется картинка.
 
 Картинка склеенная, а не альбом из двух фото, по простой причине: к альбому
 телеграм не даёт прицепить инлайн-кнопки, а без них выбирать нечем.
@@ -12,11 +18,10 @@ import asyncio
 import html
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import BaseFilter
 from aiogram.types import (
-    BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-    InputMediaPhoto, Message,
+    BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
 from database.engine import async_session_maker
@@ -63,7 +68,35 @@ def _caption(round_no: int) -> str:
             f"{DIVIDER}\nКакая лучше?")
 
 
-async def _show_round(bot: Bot, battle, dao: BattleDAO, message: Message | None) -> bool:
+async def _drop(bot: Bot, chat_id: int, message_id: int | None) -> None:
+    """Убрать прошлую картинку батла. Свои сообщения бот удаляет и в группе,
+    без прав администратора."""
+    if not message_id:
+        return
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except TelegramAPIError:
+        pass
+
+
+async def _swap(bot: Bot, battle, dao: BattleDAO, photo: BufferedInputFile,
+                caption: str, kb: InlineKeyboardMarkup | None) -> None:
+    """Прислать новую картинку и убрать предыдущую.
+
+    Именно в таком порядке: пока рисуется новая, старая ещё висит, так что
+    пустого места в чате не возникает. Если отправка почему-то не прошла —
+    старая картинка остаётся на месте, и батл не превращается в тыкву.
+    """
+    previous = battle.message_id
+    sent = await bot.send_photo(
+        battle.chat_id, photo, caption=caption, parse_mode="HTML", reply_markup=kb
+    )
+    battle.message_id = sent.message_id
+    await dao.session.commit()
+    await _drop(bot, battle.chat_id, previous)
+
+
+async def _show_round(bot: Bot, battle, dao: BattleDAO) -> bool:
     """Нарисовать очередную пару. False — если пары кончились."""
     pair = await dao.next_pair(battle)
     if pair is None:
@@ -74,22 +107,12 @@ async def _show_round(bot: Bot, battle, dao: BattleDAO, message: Message | None)
     quotes = await dao.quotes_by_ids([left, right])
     img = await _compose(bot, quotes[left], quotes[right])
     img.seek(0)
-    photo = BufferedInputFile(img.read(), filename=f"battle_{battle.round + 1}.png")
-    caption, kb = _caption(battle.round + 1), _kb(battle.id, battle.round)
-
-    if battle.message_id is None and message is not None:
-        sent = await message.answer_photo(
-            photo, caption=caption, parse_mode="HTML", reply_markup=kb
-        )
-        battle.message_id = sent.message_id
-        await dao.session.commit()
-    else:
-        await bot.edit_message_media(
-            media=InputMediaPhoto(media=photo, caption=caption, parse_mode="HTML"),
-            chat_id=battle.chat_id,
-            message_id=battle.message_id,
-            reply_markup=kb,
-        )
+    await _swap(
+        bot, battle, dao,
+        BufferedInputFile(img.read(), filename=f"battle_{battle.round + 1}.png"),
+        _caption(battle.round + 1),
+        _kb(battle.id, battle.round),
+    )
     return True
 
 
@@ -98,9 +121,9 @@ async def _finish(bot: Bot, battle, dao: BattleDAO) -> None:
     await dao.finish(battle)
 
     if not scores:
-        await bot.edit_message_caption(
-            chat_id=battle.chat_id, message_id=battle.message_id,
-            caption="Батл закончился, но выбрать никто ничего не успел 🤷", reply_markup=None,
+        await _drop(bot, battle.chat_id, battle.message_id)
+        await bot.send_message(
+            battle.chat_id, "Батл закончился, но выбрать никто ничего не успел 🤷"
         )
         return
 
@@ -118,15 +141,13 @@ async def _finish(bot: Bot, battle, dao: BattleDAO) -> None:
         f"👑 <b>Победитель батла</b>\n{DIVIDER}\n"
         f"Цитата <b>{html.escape(author)}</b> — {wins} "
         f"{plural(wins, 'победа', 'победы', 'побед')} "
-f"из {rounds} {plural(rounds, 'сравнения', 'сравнений', 'сравнений')}\n\n"
+        f"из {rounds} {plural(rounds, 'сравнения', 'сравнений', 'сравнений')}\n\n"
         f"<i>Общий рейтинг: <code>!топ батл</code></i>"
     )
-    await bot.edit_message_media(
-        media=InputMediaPhoto(
-            media=BufferedInputFile(png.read(), filename="battle_winner.png"),
-            caption=caption, parse_mode="HTML",
-        ),
-        chat_id=battle.chat_id, message_id=battle.message_id, reply_markup=None,
+    await _swap(
+        bot, battle, dao,
+        BufferedInputFile(png.read(), filename="battle_winner.png"),
+        caption, None,
     )
 
 
@@ -144,7 +165,7 @@ async def battle_cmd(message: Message):
             return
 
         battle = await dao.start(message.from_user.id, message.chat.id)
-        if not await _show_round(message.bot, battle, dao, message):
+        if not await _show_round(message.bot, battle, dao):
             await message.reply("Не смог собрать пару цитат — странно, попробуй ещё раз.")
 
 
@@ -185,7 +206,7 @@ async def cb_choice(call: CallbackQuery):
             await _finish(call.bot, battle, dao)
             return
         try:
-            if not await _show_round(call.bot, battle, dao, None):
+            if not await _show_round(call.bot, battle, dao):
                 await _finish(call.bot, battle, dao)
-        except TelegramBadRequest:
+        except TelegramAPIError:
             await _finish(call.bot, battle, dao)
