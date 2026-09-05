@@ -17,6 +17,7 @@ from handlers.command_quotes_top import quotes_top_router
 from handlers.command_battle import battle_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from database.engine import init_db, close_db
+# ДР: from utils.birthday import birthday_worker
 
 load_dotenv()
 
@@ -46,10 +47,13 @@ dp.message.outer_middleware(MessageCounterMiddleware())
 
 async def main():
     await init_db()
+    # ДР: поздравления с днём рождения. Как включить — см. utils/birthday.py
+    # ДР: birthday_task = asyncio.create_task(birthday_worker(bot))
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
+        # ДР: birthday_task.cancel()
         await flush_stats()  # дописать счётчики, что не успели уйти в базу
         await close_db()
     
