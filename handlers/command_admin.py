@@ -87,7 +87,7 @@ def _btn(text: str, action: str) -> InlineKeyboardButton:
 
 def _panel_kb(is_owner: bool) -> InlineKeyboardMarkup:
     rows = [
-        [_btn("📊 Кто зарегистрировался", "stats")],
+        [_btn("📊 Кто привязал телеграм", "stats")],
         [_btn("📥 Выгрузить Excel", "export")],
         [_btn("📤 Загрузить Excel", "import")],
     ]
@@ -168,19 +168,24 @@ async def cb_stats(call: CallbackQuery):
     async with async_session_maker() as session:
         data = await RosterDAO(session).stats()
 
-    total, registered = data["total"], data["registered"]
-    share = round(registered / total * 100) if total else 0
+    total, linked = data["total"], data["registered"]
+    share = round(linked / total * 100) if total else 0
     lines = [
-        "📊 <b>Регистрации в боте</b>", DIVIDER,
-        f"👥 <b>Всего в базе актива:</b> {total}",
-        f"✅ <b>Заполнили анкету:</b> {registered} · {share}%",
-        f"⏳ <b>Ещё нет:</b> {len(data['missing'])}",
+        "📊 <b>Актив в боте</b>", DIVIDER,
+        f"👥 <b>Всего в базе:</b> {total}",
+        f"🔗 <b>Привязали телеграм:</b> {linked} · {share}%",
+        f"📋 <b>Только из таблицы:</b> {len(data['missing'])}",
     ]
     if data["active"] != total:
         lines.append(f"🚫 <b>Помечены как не в активе:</b> {total - data['active']}")
 
+    lines += ["", "<i>В базе есть все — состав загружен из Excel. «Привязали "
+                  "телеграм» значит, что человек зашёл в бота и подтвердил себя: "
+                  "только у таких известен tg_id, поэтому их получается надёжно "
+                  "тегать, и они сами правят свои данные.</i>"]
+
     if data["missing"]:
-        lines += ["", "<b>Кто ещё не заполнил:</b>"]
+        lines += ["", "<b>Кто ещё не заходил в бота:</b>"]
         for activist in data["missing"][:PREVIEW_LIMIT * 2]:
             name = html.escape(first_last(activist.fio) if activist.fio else "без имени")
             tag = (activist.tg_username or "").strip().lstrip("@")
@@ -189,7 +194,7 @@ async def cb_stats(call: CallbackQuery):
         if left > 0:
             lines.append(f"<i>…и ещё {left} — полный список в выгрузке Excel</i>")
         lines += ["", f"<i>Из них с @тегом: {data['missing_with_tag']} — этих можно позвать "
-                      "лично, остальных не найти по тегу.</i>"]
+                      "лично, остальных по тегу не найти.</i>"]
 
     await _paint(call, "\n".join(lines), _back_kb())
 
