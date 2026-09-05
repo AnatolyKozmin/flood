@@ -26,7 +26,10 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove,
+)
 
 from database.engine import async_session_maker
 from database.profile_dao import ProfileDAO
@@ -40,6 +43,16 @@ CB = "pf"
 
 # Список умений берём из общей справки, чтобы не расходился с !помощь.
 _ABILITIES = HELP_TEXT.split("\n", 1)[1].strip()
+
+# Подписи кнопок нижней клавиатуры на вопросе про телефон. Они приходят
+# обычным текстом, поэтому и разбираются в on_answer как текст.
+CONTACT_BTN = "📱 Отправить мой номер"
+SKIP_BTN = "⏭ Пропустить"
+CANCEL_BTN = "❌ Отмена"
+BACK_BTN = "↩️ Назад к анкете"
+
+# У кого сейчас висит нижняя клавиатура — чтобы вовремя её убрать.
+_reply_kb: set[int] = set()
 
 # Последний экран бота у каждого человека: user_id → message_id.
 # В памяти: потерять его не страшно, в худшем случае одно старое сообщение
@@ -123,7 +136,8 @@ FIELDS: tuple[Field, ...] = (
     Field("group", "Группа", "🎓", "Твоя учебная группа?",
           "Например <code>РИ-410015</code>", False, _text),
     Field("phone", "Номер телефона", "📞", "Номер телефона?",
-          "Например <code>+7 999 123-45-67</code>", False, _phone),
+          "Жми <b>«Отправить мой номер»</b> внизу — подставлю сам. "
+          "Или впиши руками: <code>+7 999 123-45-67</code>", False, _phone),
     Field("email", "Почта", "✉️", "Твоя почта?",
           "Например <code>ivanov@urfu.me</code>", False, _email),
     Field("clothes_size", "Размер одежды", "👕", "Размер одежды?",
@@ -151,7 +165,28 @@ def _btn(text: str, action: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=f"{CB}:{action}")
 
 
-def _question_kb(fld: Field, editing_one: bool) -> InlineKeyboardMarkup:
+def _phone_kb(editing_one: bool) -> ReplyKeyboardMarkup:
+    """Нижняя клавиатура с запросом контакта.
+
+    Кнопка «поделиться контактом» бывает только на reply-клавиатуре, а у
+    сообщения разметка одна — поэтому на этом шаге «Пропустить» и «Отмена»
+    тоже становятся текстовыми кнопками, а не инлайновыми.
+    """
+    second = KeyboardButton(text=BACK_BTN if editing_one else CANCEL_BTN)
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=CONTACT_BTN, request_contact=True)],
+            [KeyboardButton(text=SKIP_BTN), second],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="или впиши номер руками",
+    )
+
+
+def _question_kb(fld: Field, editing_one: bool) -> InlineKeyboardMarkup | ReplyKeyboardMarkup:
+    if fld.key == "phone":
+        return _phone_kb(editing_one)
     row = []
     if not fld.required:
         row.append(_btn("⏭ Пропустить", "skip"))
@@ -248,14 +283,23 @@ async def _drop_msg(bot: Bot, chat_id: int, message_id: int | None) -> None:
         pass  # нет прав, слишком старое, уже удалено — не критично
 
 
-async def _screen(bot: Bot, chat_id: int, user_id: int, text: str,
-                  kb: InlineKeyboardMarkup | None) -> None:
+async def _screen(bot: Bot, chat_id: int, user_id: int, text: str, kb=None) -> None:
     """Показать новый экран вместо предыдущего."""
     await _drop_msg(bot, chat_id, _screens.pop(user_id, None))
+
+    # Уходим с шага телефона — убираем нижнюю клавиатуру. Снять её можно
+    # только сообщением; само сообщение тут же удаляем, на снятие это
+    # никак не влияет.
+    if user_id in _reply_kb and not isinstance(kb, ReplyKeyboardMarkup):
+        carrier = await bot.send_message(chat_id, "⌛", reply_markup=ReplyKeyboardRemove())
+        await _drop_msg(bot, chat_id, carrier.message_id)
+        _reply_kb.discard(user_id)
     sent = await bot.send_message(
         chat_id, text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True
     )
     _screens[user_id] = sent.message_id
+    if isinstance(kb, ReplyKeyboardMarkup):
+        _reply_kb.add(user_id)
 
 
 async def _show_help(bot: Bot, chat_id: int, user_id: int, state: FSMContext,
@@ -370,29 +414,88 @@ async def about_group(message: Message):
     )
 
 
+def _from_contact(message: Message, fld: Field) -> tuple:
+    """Номер из присланного контакта.
+
+    Обязательно сверяем, что контакт его собственный: телеграм разрешает
+    поделиться любым человеком из адресной книги, и без этой проверки в
+    анкету уехал бы номер постороннего.
+    """
+    if fld.key != "phone":
+        return None, "Сейчас я спрашиваю не про номер — ответь текстом."
+    contact = message.contact
+    if contact.user_id != message.from_user.id:
+        return None, "Это чужой контакт. Нужен твой — жми «Отправить мой номер»."
+    value, error = _phone(contact.phone_number)
+    if error:
+        # Не российский формат, но номер настоящий — пришёл из телеграма,
+        # а не набран руками. Сохраняем как есть, чтобы не потерять.
+        return contact.phone_number.strip(), None
+    return value, None
+
+
+async def _skip_field(bot: Bot, chat_id: int, user_id: int,
+                      state: FSMContext, fld: Field) -> None:
+    """Пропуск поля — общий путь для инлайн-кнопки и текстовой."""
+    data = await state.get_data()
+    values = dict(data.get("values", {}))
+    values.pop(fld.key, None)
+    await state.update_data(values=values)
+    await _advance(bot, chat_id, user_id, state)
+
+
+async def _cancel(bot: Bot, chat_id: int, user, state: FSMContext) -> None:
+    async with async_session_maker() as session:
+        activist = await ProfileDAO(session).by_tg_id(user.id)
+    if activist is not None:
+        await _show_help(bot, chat_id, user.id, state, activist)
+        return
+    await state.clear()
+    await _screen(bot, chat_id, user.id,
+                  "Окей, регистрацию отложили.\n\n"
+                  "Захочешь вернуться — <code>/start</code>.")
+
+
 @profile_router.message(Form.question, F.chat.type == "private")
 async def on_answer(message: Message, state: FSMContext):
-    bot, chat_id, user_id = message.bot, message.chat.id, message.from_user.id
+    bot, chat_id, user = message.bot, message.chat.id, message.from_user
     await _drop_msg(bot, chat_id, message.message_id)
-
-    if not message.text:
-        await _show_question(bot, chat_id, user_id, state,
-                             "Мне нужен текст — картинки и стикеры не подойдут.")
-        return
 
     data = await state.get_data()
     one = data.get("one")
     fld = BY_KEY[one] if one else FIELDS[data.get("idx", 0)]
 
-    value, error = fld.parse(message.text)
+    # На шаге с телефоном «Пропустить», «Отмена» и «Назад» — кнопки нижней
+    # клавиатуры, то есть приходят обычным текстом.
+    text = (message.text or "").strip()
+    if text == SKIP_BTN:
+        if fld.required:
+            await _show_question(bot, chat_id, user.id, state, "Это поле обязательное.")
+        else:
+            await _skip_field(bot, chat_id, user.id, state, fld)
+        return
+    if text == BACK_BTN:
+        await _show_card(bot, chat_id, user.id, state)
+        return
+    if text == CANCEL_BTN:
+        await _cancel(bot, chat_id, user, state)
+        return
+
+    if message.contact is not None:
+        value, error = _from_contact(message, fld)
+    elif not message.text:
+        value, error = None, "Мне нужен текст — картинки и стикеры не подойдут."
+    else:
+        value, error = fld.parse(message.text)
+
     if error:
-        await _show_question(bot, chat_id, user_id, state, error)
+        await _show_question(bot, chat_id, user.id, state, error)
         return
 
     values = dict(data.get("values", {}))
     values[fld.key] = value
     await state.update_data(values=values)
-    await _advance(bot, chat_id, user_id, state)
+    await _advance(bot, chat_id, user.id, state)
 
 
 # ─────────────────────────── кнопки ───────────────────────────
@@ -412,10 +515,7 @@ async def cb_skip(call: CallbackQuery, state: FSMContext):
         await call.answer("Это поле обязательное", show_alert=True)
         return
     await call.answer()
-    values = dict(data.get("values", {}))
-    values.pop(fld.key, None)
-    await state.update_data(values=values)
-    await _advance(call.bot, call.message.chat.id, call.from_user.id, state)
+    await _skip_field(call.bot, call.message.chat.id, call.from_user.id, state, fld)
 
 
 @profile_router.callback_query(F.data == f"{CB}:card")
@@ -512,13 +612,4 @@ async def cb_drop_yes(call: CallbackQuery, state: FSMContext):
 async def cb_cancel(call: CallbackQuery, state: FSMContext):
     _remember(call)
     await call.answer()
-    user = call.from_user
-    async with async_session_maker() as session:
-        activist = await ProfileDAO(session).by_tg_id(user.id)
-    if activist is not None:
-        await _show_help(call.bot, call.message.chat.id, user.id, state, activist)
-        return
-    await state.clear()
-    await _screen(call.bot, call.message.chat.id, user.id,
-                  "Окей, регистрацию отложили.\n\nЗахочешь вернуться — "
-                  "<code>/start</code>.", None)
+    await _cancel(call.bot, call.message.chat.id, call.from_user, state)
