@@ -1,6 +1,8 @@
 from aiogram import Router, F
 from aiogram.types import Message
 
+from handlers.command_admin import is_admin
+
 help_router = Router()
 
 HELP_TEXT = """Привет! Я <b>БотИК</b>. Вот что я умею:
@@ -38,6 +40,24 @@ HELP_TEXT = """Привет! Я <b>БотИК</b>. Вот что я умею:
 <code>!помощь</code> — вызывает это сообщение"""
 
 
+ADMIN_HELP = """🛠 <b>Только для админов:</b>
+<code>!админка</code> — состав в Excel: выгрузить, поправить, залить обратно; кто уже зарегистрировался
+<code>!id</code> — узнать свой telegram id"""
+
+
+async def with_admin_block(text: str, message: Message) -> str:
+    """Дописать админский блок, если спрашивает админ и спрашивает в личке.
+
+    Именно в личке: !помощь в группе читает весь чат, и упоминание панели
+    там выдало бы её существование всем — а она задумана незаметной.
+    """
+    if message.chat.type != "private" or message.from_user is None:
+        return text
+    if not await is_admin(message.from_user.id):
+        return text
+    return f"{text}\n\n{ADMIN_HELP}"
+
+
 @help_router.message(F.text == "!помощь")
 async def help_cmd(message: Message):
-    await message.answer(HELP_TEXT, parse_mode="HTML")
+    await message.answer(await with_admin_block(HELP_TEXT, message), parse_mode="HTML")
