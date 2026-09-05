@@ -5,9 +5,11 @@ from aiogram.filters import BaseFilter
 from aiogram.types import BufferedInputFile, InputMediaPhoto, Message
 
 from database.dao import ActivistsDAO, QuotesDAO
+from database.quotes_extra_dao import VotesDAO
 from database.engine import async_session_maker
 from utils.create_quote import render_quote_pages
 from utils.helpers import first_last
+from handlers.command_quotes_top import vote_kb
 from utils.telegram_avatar import load_user_profile_avatar
 
 
@@ -26,16 +28,21 @@ quotes_router = Router()
 QUOTE_ALBUM_MAX = 10
 
 
-async def _send_quote_pngs(message: Message, pngs: list, caption_html: str | None = None) -> None:
+async def _send_quote_pngs(message: Message, pngs: list, caption_html: str | None = None,
+                          quote_id: int | None = None, votes: int = 0) -> None:
     if not pngs:
         return
     parse_mode = "HTML" if caption_html else None
+    # Кнопка голосования (см. handlers/command_quotes_top.py). У альбомов
+    # инлайн-клавиатур не бывает — для них кнопка уходит отдельным сообщением.
+    kb = vote_kb(quote_id, votes) if quote_id is not None else None
     if len(pngs) == 1:
         pngs[0].seek(0)
         await message.answer_photo(
             BufferedInputFile(pngs[0].read(), filename="quote.png"),
             caption=caption_html,
             parse_mode=parse_mode,
+            reply_markup=kb,
         )
         return
     for chunk_start in range(0, len(pngs), QUOTE_ALBUM_MAX):
@@ -51,6 +58,8 @@ async def _send_quote_pngs(message: Message, pngs: list, caption_html: str | Non
                 parse_mode=parse_mode if cap else None,
             ))
         await message.answer_media_group(media)
+    if kb is not None:
+        await message.answer("Понравилась цитата?", reply_markup=kb)
 
 
 def _quoted_text(reply: Message) -> str | None:
@@ -100,13 +109,14 @@ async def save_quote(message: Message):
     pngs = await loop.run_in_executor(
         None, lambda: render_quote_pages(text_body, image_author, avatar=avatar)
     )
-    await _send_quote_pngs(message, pngs)
+    await _send_quote_pngs(message, pngs, quote_id=quote.id)
 
 
 @quotes_router.message(FirstWord("!мудрость"))
 async def random_wisdom(message: Message):
     async with async_session_maker() as session:
         q = await QuotesDAO(session).get_random_quote()
+        votes = await VotesDAO(session).count(q.id) if q else 0
 
     if not q:
         await message.reply("Пока нет ни одной цитаты. Сначала кто-нибудь использует !цитата 🙂")
@@ -136,4 +146,4 @@ async def random_wisdom(message: Message):
     pngs = await loop.run_in_executor(
         None, lambda: render_quote_pages(q.text_of_quotes, image_author, avatar=avatar)
     )
-    await _send_quote_pngs(message, pngs)
+    await _send_quote_pngs(message, pngs, quote_id=q.id, votes=votes)

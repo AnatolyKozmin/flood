@@ -13,6 +13,8 @@ from handlers.command_tarot import tarot_router
 from handlers.command_top import top_router
 from handlers.command_profile import profile_router
 from handlers.command_all import all_router
+from handlers.command_quotes_top import quotes_top_router
+from handlers.command_battle import battle_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from database.engine import init_db, close_db
 
@@ -31,6 +33,10 @@ dp.include_router(quotes_router)
 dp.include_router(mafia_router)
 dp.include_router(info_router)
 dp.include_router(tarot_router)
+# Раньше top_router: «!топ цитат» и «!топ батл» должны разбираться
+# до обычного !топ, иначе он посчитает «цитат» неизвестным периодом.
+dp.include_router(quotes_top_router)
+dp.include_router(battle_router)
 dp.include_router(top_router)
 dp.include_router(all_router)
 
