@@ -15,6 +15,7 @@ from handlers.command_profile import profile_router
 from handlers.command_all import all_router
 from handlers.command_quotes_top import quotes_top_router
 from handlers.command_battle import battle_router
+from handlers.command_admin import admin_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from database.engine import init_db, close_db
 # ДР: from utils.birthday import birthday_worker
@@ -27,6 +28,7 @@ dp = Dispatcher()
 # Анкета в личке идёт первой: пока человек отвечает на вопросы, её
 # FSM-хендлер должен ловить сообщения раньше остальных команд.
 dp.include_router(profile_router)
+dp.include_router(admin_router)
 dp.include_router(help_router)
 dp.include_router(people_router)
 dp.include_router(random_router)
