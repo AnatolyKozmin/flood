@@ -105,6 +105,48 @@ async def _render_all(bot, quotes: list) -> list:
     return await asyncio.gather(*(render_one(bot, q, loop) for q in quotes))
 
 
+def _snippet(text: str, budget: int) -> str:
+    """Текст цитаты для подписи: в одну строку и в пределах бюджета."""
+    clean = " ".join((text or "").split())
+    if len(clean) > budget:
+        clean = clean[:budget].rsplit(" ", 1)[0].rstrip(" ,.;:—-") + "…"
+    return html.escape(clean)
+
+
+def _caption(head: list[str], entries: list[tuple[str, str]],
+             tail: list[str] | None = None) -> str:
+    """Подпись к альбому: заголовок, места с текстом цитат, хвост.
+
+    Подпись у телеграма ограничена 1024 символами, а цитата бывает длинной.
+    Поэтому сначала считаем всё несокращаемое, а остаток делим поровну между
+    цитатами — так одна многословная не съедает место у остальных.
+    """
+    tail = tail or []
+    fixed = len("\n".join(head + tail)) + sum(len(line) + 6 for line, _ in entries)
+    total = max(40 * len(entries), CAPTION_LIMIT - fixed - 40)
+
+    # Делим не поровну: короткая цитата берёт ровно свою длину, а
+    # неизрасходованное уходит длинным. Иначе одна короткая цитата держала бы
+    # треть подписи пустой, пока соседнюю режет на полуслове.
+    lengths = [len(" ".join((text or "").split())) for _, text in entries]
+    budgets = [0] * len(entries)
+    left = total
+    for done, i in enumerate(sorted(range(len(lengths)), key=lambda k: lengths[k])):
+        budgets[i] = min(lengths[i], left // (len(lengths) - done))
+        left -= budgets[i]
+
+    out = list(head)
+    for (line, text), budget in zip(entries, budgets):
+        out.append(line)
+        snippet = _snippet(text, budget)
+        if snippet:
+            out.append(f"<i>«{snippet}»</i>")
+        out.append("")
+    while out and out[-1] == "":
+        out.pop()
+    return _trim("\n".join(out + tail))
+
+
 def _trim(caption: str) -> str:
     if len(caption) <= CAPTION_LIMIT:
         return caption
@@ -170,12 +212,14 @@ async def top_quotes(message: Message):
     pngs = await _render_all(message.bot, [quotes[qid] for qid, _ in board])
     authors = await asyncio.gather(*(quote_author(quotes[qid]) for qid, _ in board))
 
-    lines = [f"🏆 <b>Топ цитат</b> — {title}", DIVIDER]
-    for place, ((_, votes), author) in enumerate(zip(board, authors), start=1):
+    entries = []
+    for place, ((quote_id, votes), author) in enumerate(zip(board, authors), start=1):
         medal = MEDALS.get(place, f"{place}.")
-        lines.append(f"{medal} {html.escape(author)} — {votes} ❤️")
+        entries.append((f"{medal} <b>{html.escape(author)}</b> — {votes} ❤️",
+                        quotes[quote_id].text_of_quotes))
 
-    await _send_album(message, pngs, _trim("\n".join(lines)))
+    caption = _caption([f"🏆 <b>Топ цитат</b> — {title}", DIVIDER], entries)
+    await _send_album(message, pngs, caption)
     await _drop_note(note)
 
 
@@ -199,17 +243,18 @@ async def top_battle(message: Message):
     pngs = await _render_all(message.bot, [quotes[row[0]] for row in board])
     authors = await asyncio.gather(*(quote_author(quotes[row[0]]) for row in board))
 
-    lines = ["⚔️ <b>Топ цитат по батлам</b>", DIVIDER]
-    for place, ((_, points, _shown), author) in enumerate(zip(board, authors), start=1):
+    entries = []
+    for place, ((quote_id, points, _shown), author) in enumerate(zip(board, authors), start=1):
         medal = MEDALS.get(place, f"{place}.")
-        lines.append(
-            f"{medal} {html.escape(author)} — {points} "
-            f"{plural(points, 'балл', 'балла', 'баллов')}"
-        )
-    lines += ["", "<i>Балл за каждую выигранную пару. Поэтому цитата, которая "
-                  "раз за разом остаётся второй, обгоняет ту, что один раз "
-                  f"взяла первое место.</i>",
-              f"<i>Сыграно {played} {plural(played, 'батл', 'батла', 'батлов')}.</i>"]
+        entries.append((f"{medal} <b>{html.escape(author)}</b> — {points} "
+                        f"{plural(points, 'балл', 'балла', 'баллов')}",
+                        quotes[quote_id].text_of_quotes))
 
-    await _send_album(message, pngs, _trim("\n".join(lines)))
+    caption = _caption(
+        ["⚔️ <b>Топ цитат по батлам</b>", DIVIDER],
+        entries,
+        ["", f"<i>Балл за каждую выигранную пару. Сыграно {played} "
+             f"{plural(played, 'батл', 'батла', 'батлов')}.</i>"],
+    )
+    await _send_album(message, pngs, caption)
     await _drop_note(note)
