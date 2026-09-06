@@ -17,6 +17,7 @@ from handlers.command_quotes_top import quotes_top_router
 from handlers.command_battle import battle_router
 from handlers.command_admin import admin_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
+from middlewares.admin_promote import AdminPromoteMiddleware
 from database.engine import init_db, close_db
 # ДР: from utils.birthday import birthday_worker
 
@@ -46,6 +47,10 @@ dp.include_router(all_router)
 # Считает сообщения для !топ и !стата. outer — значит срабатывает раньше
 # фильтров: считаются все сообщения, а не только те, что попали в команды.
 dp.message.outer_middleware(MessageCounterMiddleware())
+
+# Включает админку тем, кому её выдали по @тегу заранее (см.
+# middlewares/admin_promote.py). Срабатывает на первом сообщении в личку.
+dp.message.outer_middleware(AdminPromoteMiddleware())
 
 async def main():
     await init_db()

@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.admin_models import BotAdmin
+from database.admin_models import BotAdmin, PendingAdmin
 from database.models import Activists
 from database.profile_models import ActivistLink
 from utils.helpers import MSK
@@ -47,6 +47,59 @@ class AdminDAO:
         if admin is None:
             return False
         await self.session.execute(sa_delete(BotAdmin).where(BotAdmin.tg_id == tg_id))
+        await self.session.commit()
+        return True
+
+
+class PendingDAO:
+    """Отложенные админы: выданы по тегу, ждут первого захода в бота."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @staticmethod
+    def _key(username: str) -> str:
+        return (username or "").strip().lstrip("@").casefold()
+
+    async def all(self) -> list[PendingAdmin]:
+        return list((await self.session.execute(
+            select(PendingAdmin).order_by(PendingAdmin.added_at)
+        )).scalars().all())
+
+    async def add(self, username: str, added_by: int) -> bool:
+        key = self._key(username)
+        if not key or await self.session.get(PendingAdmin, key) is not None:
+            return False
+        self.session.add(PendingAdmin(username=key, added_by=added_by, added_at=_now()))
+        await self.session.commit()
+        return True
+
+    async def remove(self, username: str) -> bool:
+        key = self._key(username)
+        if await self.session.get(PendingAdmin, key) is None:
+            return False
+        await self.session.execute(
+            sa_delete(PendingAdmin).where(PendingAdmin.username == key)
+        )
+        await self.session.commit()
+        return True
+
+    async def claim(self, tg_id: int, username: str) -> bool:
+        """Превратить отложенную запись в настоящего админа. True — если сработало."""
+        key = self._key(username)
+        if not key:
+            return False
+        pending = await self.session.get(PendingAdmin, key)
+        if pending is None:
+            return False
+        await self.session.execute(
+            sa_delete(PendingAdmin).where(PendingAdmin.username == key)
+        )
+        if await self.session.get(BotAdmin, tg_id) is None:
+            self.session.add(BotAdmin(
+                tg_id=tg_id, username=key, title="",
+                added_by=pending.added_by, added_at=_now(),
+            ))
         await self.session.commit()
         return True
 

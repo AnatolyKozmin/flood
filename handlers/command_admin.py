@@ -26,7 +26,10 @@ from aiogram.types import (
     BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
-from database.admin_dao import AdminDAO, RosterDAO
+from database.admin_dao import AdminDAO, PendingDAO, RosterDAO
+from database.models import Activists
+from database.profile_models import ActivistLink
+from sqlalchemy import func, select
 from database.engine import async_session_maker
 from database.stats_dao import StatsDAO
 from utils.format import DIVIDER
@@ -399,8 +402,9 @@ async def _who(bot: Bot, tg_id: int, known: str | None = None) -> str:
         chat = await bot.get_chat(tg_id)
         if chat.username:
             return f"@{html.escape(chat.username)}"
-    except TelegramAPIError:
-        pass
+    except Exception:
+        # Запрос чисто косметический — ниже есть чем показать человека.
+        logger.debug("get_chat по id %s не сработал", tg_id, exc_info=True)
     if known:
         return f"@{html.escape(known.lstrip('@'))}"
     return f"<code>{tg_id}</code>"
@@ -409,6 +413,7 @@ async def _who(bot: Bot, tg_id: int, known: str | None = None) -> str:
 async def _admins_screen(target: CallbackQuery) -> None:
     async with async_session_maker() as session:
         admins = await AdminDAO(session).all()
+        pending = await PendingDAO(session).all()
 
     owner = await _who(target.bot, owner_id())
     lines = ["👥 <b>Кто имеет доступ</b>", DIVIDER,
@@ -419,8 +424,15 @@ async def _admins_screen(target: CallbackQuery) -> None:
         title = f" · {html.escape(admin.title)}" if admin.title else ""
         lines.append(f"• {who}{title}")
         rows.append([_btn(f"🗑 Убрать {admin.username or admin.tg_id}", f"del:{admin.tg_id}")])
-    if not admins:
+    if not admins and not pending:
         lines.append("<i>Больше никого. Добавь кнопкой ниже.</i>")
+
+    if pending:
+        lines += ["", "<b>Ждут первого захода в бота:</b>"]
+        for item in pending:
+            lines.append(f"⏳ @{html.escape(item.username)}")
+            rows.append([_btn(f"🗑 Отменить @{item.username}", f"delp:{item.username}")])
+        lines.append("<i>Доступ включится сам, когда человек напишет боту.</i>")
 
     rows.append([_btn("➕ Добавить", "add")])
     rows.append([_btn("↩️ В панель", "panel")])
@@ -442,17 +454,68 @@ async def cb_add(call: CallbackQuery, state: FSMContext):
         call,
         "➕ <b>Кого добавить?</b>\n" + DIVIDER + "\n"
         "Пришли одно из:\n"
-        "• его telegram id числом — <code>123456789</code>;\n"
-        "• <code>@тег</code> — сработает, если человек писал во флуде при боте;\n"
+        "• <code>@тег</code> — годится любой из базы актива;\n"
+        "• telegram id числом — <code>123456789</code>;\n"
         "• перешли сюда любое его сообщение.\n\n"
-        "<i>Свой id человек узнаёт командой <code>!id</code> в личке с ботом.</i>",
+        "<i>Если человек ещё ни разу не заходил в бота, доступ включится "
+        "сам при первом его сообщении боту в личку — телеграм не даёт "
+        "узнать id по одному тегу.</i>",
         _kb([_btn("↩️ Назад", "admins")]),
     )
 
 
+async def _by_tag(bot: Bot, tag: str) -> tuple[int | None, str | None, bool]:
+    """Найти id по @тегу. Возвращает (id, тег, есть ли такой в базе актива).
+
+    Порядок от надёжного к слабому: кто заполнил анкету (у него точно есть
+    tg_id), кто писал во флуде, потом попытка спросить сам телеграм. Если id
+    так и не нашёлся, но тег есть в активе — вернём его, чтобы выдать доступ
+    отложенно.
+    """
+    clean = tag.strip().lstrip("@")
+    if not clean:
+        return None, None, False
+    needle = clean.casefold()
+
+    async with async_session_maker() as session:
+        # 1. Заполнил анкету в личке — id известен наверняка.
+        row = (await session.execute(
+            select(ActivistLink.tg_id)
+            .join(Activists, Activists.id == ActivistLink.activist_id)
+            .where(func.lower(func.replace(Activists.tg_username, "@", "")) == needle)
+        )).scalars().first()
+        if row:
+            return int(row), clean, True
+
+        # 2. Писал во флуде при работающем счётчике.
+        found = await StatsDAO(session).user_by_username(clean)
+        if found is not None:
+            return found.user_id, found.username or clean, True
+
+        in_roster = (await session.execute(
+            select(func.count()).select_from(Activists).where(
+                func.lower(func.replace(Activists.tg_username, "@", "")) == needle
+            )
+        )).scalar_one() > 0
+
+    # 3. Вдруг телеграм ответит сам. Для пользователей это не гарантировано,
+    #    поэтому проверяем тип: под тем же тегом может оказаться канал.
+    try:
+        chat = await bot.get_chat(f"@{clean}")
+        if chat.type == "private":
+            return chat.id, chat.username or clean, in_roster
+    except Exception:
+        # Попытка необязательная: телеграм не обещает отвечать на тег
+        # пользователя. Что бы тут ни случилось, ниже есть отложенная
+        # выдача — ронять из-за этого добавление админа нельзя.
+        logger.debug("get_chat по тегу @%s не сработал", clean, exc_info=True)
+
+    return None, clean, in_roster
+
+
 @admin_router.message(Admin.wait_admin, OwnerOnly())
 async def on_add_admin(message: Message, state: FSMContext):
-    tg_id, username = None, None
+    tg_id, username, in_roster = None, None, False
 
     forwarded = getattr(message, "forward_from", None)
     if forwarded is not None:
@@ -462,21 +525,18 @@ async def on_add_admin(message: Message, state: FSMContext):
         if text.lstrip("-").isdigit():
             tg_id = int(text)
         else:
-            async with async_session_maker() as session:
-                found = await StatsDAO(session).user_by_username(text)
-            if found is not None:
-                tg_id, username = found.user_id, found.username
+            tg_id, username, in_roster = await _by_tag(message.bot, text)
 
     try:
         await message.delete()
     except TelegramAPIError:
         pass
 
-    if tg_id is None:
+    if tg_id is None and not in_roster:
         await message.answer(
-            "Не понял, кто это. Нужен id числом, @тег того, кто писал во флуде, "
-            "или пересланное сообщение.\n\n"
-            "<i>Если у человека скрыта пересылка — попроси его прислать "
+            "Не понял, кто это. Нужен @тег из базы актива, id числом или "
+            "пересланное сообщение.\n\n"
+            "<i>Если тега в базе нет — попроси человека прислать "
             "<code>!id</code> из лички с ботом.</i>",
             parse_mode="HTML",
         )
@@ -486,17 +546,42 @@ async def on_add_admin(message: Message, state: FSMContext):
         await message.answer("Это ты, у тебя и так полный доступ.")
         return
 
+    await state.clear()
+
+    # Тег в активе есть, а id неизвестен: выдаём отложенно.
+    if tg_id is None:
+        async with async_session_maker() as session:
+            added = await PendingDAO(session).add(username, message.from_user.id)
+        who = html.escape(f"@{username}")
+        await message.answer(
+            f"⏳ Доступ для {who} записан.\n\n"
+            "Он ещё ни разу не заходил в бота, а телеграм не даёт узнать id по "
+            "одному тегу. Админка включится сама, как только он напишет боту в "
+            "личку — попроси его отправить <code>/start</code>."
+            if added else f"{who} уже в очереди на доступ.",
+            parse_mode="HTML",
+        )
+        logger.info("Отложенный доступ для @%s выдал %s", username, message.from_user.id)
+        return
+
     async with async_session_maker() as session:
         added = await AdminDAO(session).add(tg_id, username, "", message.from_user.id)
 
-    await state.clear()
-    who = f"@{username}" if username else str(tg_id)
+    who = html.escape(f"@{username}" if username else str(tg_id))
     await message.answer(
-        f"✅ {html.escape(who)} теперь админ." if added
-        else f"{html.escape(who)} и так уже в списке.",
+        f"✅ {who} теперь админ." if added else f"{who} и так уже в списке.",
         parse_mode="HTML",
     )
     logger.info("Админ %s добавил %s", message.from_user.id, tg_id)
+
+
+@admin_router.callback_query(F.data.startswith(f"{CB}:delp:"), OwnerOnly())
+async def cb_del_pending(call: CallbackQuery):
+    username = call.data.split(":", 2)[-1]
+    async with async_session_maker() as session:
+        removed = await PendingDAO(session).remove(username)
+    await call.answer("Убрал из очереди" if removed else "Его и так нет")
+    await _admins_screen(call)
 
 
 @admin_router.callback_query(F.data.startswith(f"{CB}:del:"), OwnerOnly())
