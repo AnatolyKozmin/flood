@@ -1,13 +1,21 @@
 """!все — тегнуть всех во флуде.
 
 Важное ограничение телеграма: бот НЕ может получить список участников группы
-(getChatAdministrators отдаёт только админов, а полного списка в Bot API нет).
-Поэтому тегаем тех, кого бот реально видел в этом чате — их собирает
-middlewares/message_counter.py в таблицу message_stats. То есть в списке
-окажется каждый, кто написал хоть одно сообщение с момента добавления бота.
+(getChatAdministrators отдаёт только админов, полного списка в Bot API нет).
+Поэтому зовём из двух источников сразу:
 
-Тегаем ссылкой tg://user?id=... — она пингует и тех, у кого нет @юзернейма,
-а имя подставляем из базы актива (ФИО), если человек там есть.
+  1. Кого бот видел пишущим в этом чате — их собирает message_counter в
+     message_stats. Таких зовём ссылкой tg://user?id=: она не протухает при
+     смене @тега и работает даже у тех, у кого тега нет вовсе.
+  2. Весь актив из базы, у кого есть @тег. Нужно потому, что счётчик считает
+     только с момента своего появления: сразу после обновления бота первый
+     источник пуст, и без второго !все не позвал бы вообще никого.
+
+Дубли убираем по @тегу, иначеавший активист попал бы в список дважды.
+
+Оговорка, которую не обойти: упоминание пингует только того, кто реально
+состоит в чате. Кто в базе есть, а во флуде его нет, просто увидит свой тег
+текстом — узнать состав чата бот не может.
 """
 import html
 from time import monotonic
@@ -17,7 +25,9 @@ from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
 from database.engine import async_session_maker
+from database.models import Activists
 from database.stats_dao import StatsDAO
+from sqlalchemy import select
 from middlewares.message_counter import flush_stats
 from utils.stats import build_names, plural
 
@@ -83,30 +93,50 @@ async def all_cmd(message: Message):
 
     await flush_stats()  # вдруг кто-то написал первый раз только что
     async with async_session_maker() as session:
-        board = await StatsDAO(session).leaderboard(message.chat.id)
+        dao = StatsDAO(session)
+        board = await dao.leaderboard(message.chat.id)
         user_ids = [user_id for user_id, _ in board]
-        if not user_ids:
-            await message.reply(
-                "Я пока никого здесь не видел — тегать некого. "
-                "Дай людям написать хоть по сообщению."
-            )
-            return
-        names = await build_names(session, user_ids)
+        names = await build_names(session, user_ids) if user_ids else {}
+
+        # Чьи теги уже покрыты первым источником — чтобы не звать дважды.
+        seen = await dao.users(user_ids)
+        covered = {
+            (user.username or "").strip().lstrip("@").casefold()
+            for user in seen.values() if user.username
+        }
+
+        rows = (await session.execute(
+            select(Activists).where(Activists.is_active.is_(True))
+        )).scalars().all()
+        extra = []
+        for activist in rows:
+            tag = (activist.tg_username or "").strip().lstrip("@")
+            if tag and tag.casefold() not in covered:
+                extra.append(tag)
+
+    mentions = [_link(user_id, names[user_id]) for user_id in user_ids]
+    mentions += [f"@{tag}" for tag in sorted(extra, key=str.casefold)]
+
+    if not mentions:
+        await message.reply(
+            "Звать некого: в базе актива нет ни одного @тега, и писавших я "
+            "пока не видел."
+        )
+        return
 
     _last_call[message.chat.id] = now
 
     tail = _tail(message.text)
     header = html.escape(tail) if tail else "Общий сбор!"
-    total = len(user_ids)
+    total = len(mentions)
     lines = [f"📣 <b>{header}</b>",
-             f"<i>Зову всех, кого видел в чате — {total} "
-             f"{plural(total, 'человек', 'человека', 'человек')}</i>"]
+             f"<i>Зову {total} {plural(total, 'человека', 'человек', 'человек')} — "
+             f"весь актив из базы плюс всех, кто писал в чате</i>"]
     await message.answer("\n".join(lines), parse_mode="HTML")
 
     for start in range(0, total, CHUNK):
-        chunk = user_ids[start:start + CHUNK]
         await message.answer(
-            " ".join(_link(user_id, names[user_id]) for user_id in chunk),
+            " ".join(mentions[start:start + CHUNK]),
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
