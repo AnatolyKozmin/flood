@@ -26,6 +26,7 @@ from aiogram.types import (
 
 from database.engine import async_session_maker
 from database.quotes_extra_dao import BATTLE_ROUNDS, BattleDAO
+from database.stats_dao import StatsDAO
 from utils.format import DIVIDER
 from utils.quote_render import quote_author, render_one, stack
 from utils.stats import plural
@@ -162,6 +163,28 @@ async def battle_cmd(message: Message):
                 "Сохраните ещё через <code>!цитата</code>.",
                 parse_mode="HTML",
             )
+            return
+
+        # Батл делает только один человек за раз — иначе картинки и кнопки
+        # двух сессий перемешаются во флуде.
+        active = await dao.active_in_chat(message.chat.id)
+        if active is not None:
+            users = await StatsDAO(session).users([active.user_id])
+            found = users.get(active.user_id)
+            if found is not None and found.username:
+                who = f"@{found.username.lstrip('@')}"
+            elif found is not None and found.full_name:
+                who = html.escape(found.full_name)
+            else:
+                who = "Кто-то"
+            if active.user_id == message.from_user.id:
+                await message.reply(
+                    "Ты уже делаешь батл — жми кнопки на картинке выше 👆"
+                )
+            else:
+                await message.reply(
+                    f"{who} уже делает батл — дождись, пока закончит."
+                )
             return
 
         battle = await dao.start(message.from_user.id, message.chat.id)

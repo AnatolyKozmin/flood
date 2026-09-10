@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.duel_models import DeadSoul, WhiteFlag
+from database.duel_models import DeadSoul, DuelStat, WhiteFlag
 from utils.helpers import msk_now
 
 DEATH_TTL = timedelta(hours=1)
@@ -126,3 +126,66 @@ class DuelDAO:
         )
         await self.session.commit()
         return result.rowcount or 0
+
+    # ── счёт ──
+
+    async def _stat_row(
+        self, chat_id: int, user_id: int, username: str, display: str
+    ) -> DuelStat:
+        row = (await self.session.execute(
+            select(DuelStat).where(
+                DuelStat.chat_id == chat_id, DuelStat.user_id == user_id
+            )
+        )).scalars().first()
+        if row is None:
+            # Счётчики дублируем и в питоне: default=0 срабатывает только
+            # в базе, а прибавляем мы раньше flush.
+            row = DuelStat(
+                chat_id=chat_id, user_id=user_id,
+                duel_wins=0, duel_losses=0, roulette_wins=0, roulette_losses=0,
+            )
+            self.session.add(row)
+        row.username = username or ""
+        row.display = display or ""
+        return row
+
+    async def record_duel(
+        self,
+        chat_id: int,
+        winner: tuple[int, str, str],
+        loser: tuple[int, str, str],
+    ) -> None:
+        """Победа — противник умер, поражение — умер сам."""
+        w = await self._stat_row(chat_id, winner[0], winner[1], winner[2])
+        w.duel_wins += 1
+        l = await self._stat_row(chat_id, loser[0], loser[1], loser[2])
+        l.duel_losses += 1
+        await self.session.commit()
+
+    async def record_roulette(
+        self, chat_id: int, user: tuple[int, str, str], survived: bool
+    ) -> None:
+        """В рулетке победа — остался жив, поражение — умер."""
+        row = await self._stat_row(chat_id, user[0], user[1], user[2])
+        if survived:
+            row.roulette_wins += 1
+        else:
+            row.roulette_losses += 1
+        await self.session.commit()
+
+    async def top_fighters(
+        self, chat_id: int, limit: int = 3
+    ) -> tuple[list[DuelStat], list[DuelStat]]:
+        """(топ победителей, топ проигравших) — суммарно дуэли + рулетка."""
+        rows = (await self.session.execute(
+            select(DuelStat).where(DuelStat.chat_id == chat_id)
+        )).scalars().all()
+        winners = sorted(
+            (r for r in rows if r.duel_wins + r.roulette_wins > 0),
+            key=lambda r: (-(r.duel_wins + r.roulette_wins), r.user_id),
+        )[:limit]
+        losers = sorted(
+            (r for r in rows if r.duel_losses + r.roulette_losses > 0),
+            key=lambda r: (-(r.duel_losses + r.roulette_losses), r.user_id),
+        )[:limit]
+        return winners, losers

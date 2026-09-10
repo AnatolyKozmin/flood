@@ -1,6 +1,6 @@
 """Запросы для голосования за цитаты и батла."""
 import random
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +11,10 @@ from database.quotes_extra_models import BattleRound, BattleSession, QuoteVote
 from utils.helpers import MSK
 
 BATTLE_ROUNDS = 10
+
+# Брошенный батл перестаёт блокировать новые через полчаса: иначе одна
+# недожатая сессия навсегда закрывала бы !батл всему чату.
+BATTLE_STALE = timedelta(minutes=30)
 
 
 def _now() -> datetime:
@@ -109,6 +113,34 @@ class BattleDAO:
         self.session.add(session)
         await self.session.commit()
         return session
+
+    async def active_in_chat(self, chat_id: int) -> BattleSession | None:
+        """Незаконченный батл в чате — батл делает только один человек за раз.
+
+        Протухшие (стартовали раньше BATTLE_STALE) молча закрываем: их кнопки
+        всё равно уже утонули во флуде, а блокировать чат они не должны."""
+        now = _now()
+        rows = (await self.session.execute(
+            select(BattleSession)
+            .where(
+                BattleSession.chat_id == chat_id,
+                BattleSession.finished_at.is_(None),
+            )
+            .order_by(BattleSession.started_at.desc())
+        )).scalars().all()
+
+        alive: BattleSession | None = None
+        stale = False
+        for battle in rows:
+            if battle.started_at is not None and battle.started_at >= now - BATTLE_STALE:
+                if alive is None:
+                    alive = battle
+            else:
+                battle.finished_at = now
+                stale = True
+        if stale:
+            await self.session.commit()
+        return alive
 
     async def get(self, session_id: int) -> BattleSession | None:
         return await self.session.get(BattleSession, session_id)

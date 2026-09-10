@@ -15,11 +15,12 @@ from aiogram import Router
 from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
+from database.dao import ActivistsDAO
 from database.duel_dao import DuelDAO, FLAG_TTL
 from database.engine import async_session_maker
 from database.stats_dao import StatsDAO
 from utils.format import DIVIDER
-from utils.helpers import msk_now
+from utils.helpers import first_last, msk_now
 from utils.stats import plural
 
 duel_router = Router()
@@ -30,6 +31,9 @@ FLAG_UP_CMDS = ("!поднять флаг", "!подними флаг")
 FLAG_DOWN_CMDS = ("!опустить флаг", "!опусти флаг")
 PEACEFUL_CMD = "!мирные"
 GRAVEYARD_CMD = "!кладбище"
+DUEL_TOP_WORDS = {"дуэлей", "дуэлянтов", "дуэли", "дуэлянты"}
+
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 ROULETTE_DEATH_CHANCE = 1 / 6
 
@@ -70,6 +74,21 @@ def _who(user_id: int, username: str | None, display: str | None) -> str:
         return f"@{tag}"
     name = html.escape((display or "").strip() or "боец")
     return f'<a href="tg://user?id={user_id}">{name}</a>'
+
+
+async def _plain_name(
+    session, user_id: int, username: str | None, display: str | None
+) -> str:
+    """Имя без тега и без ссылки — «Имя Фамилия» из базы актива,
+    иначе имя из телеграма. Для списков (!мирные, !кладбище, флаги),
+    где пинговать никого не надо."""
+    tag = (username or "").strip().lstrip("@")
+    if tag:
+        activist = await ActivistsDAO(session).get_by_username(tag)
+        if activist and activist.fio:
+            return html.escape(first_last(activist.fio))
+    base = (display or "").strip() or tag
+    return html.escape(base or "боец")
 
 
 def _me(user) -> tuple[int, str, str]:
@@ -151,6 +170,7 @@ async def duel_cmd(message: Message):
         else:
             loser, winner = (me_id, me_tag, me_name), (target_id, target_tag, target_name)
         await dao.kill(message.chat.id, loser[0], loser[1], loser[2])
+        await dao.record_duel(message.chat.id, winner, loser)
 
     await message.answer(
         f"{_who(*loser)} умер! Воскрешение запланировано через час. "
@@ -167,16 +187,21 @@ async def roulette_cmd(message: Message):
 
     me_id, me_tag, me_name = _me(message.from_user)
     who = _who(me_id, me_tag, me_name)
+    me = (me_id, me_tag, me_name)
 
     if random.random() < ROULETTE_DEATH_CHANCE:
         async with async_session_maker() as session:
-            await DuelDAO(session).kill(message.chat.id, me_id, me_tag, me_name)
+            dao = DuelDAO(session)
+            await dao.kill(message.chat.id, me_id, me_tag, me_name)
+            await dao.record_roulette(message.chat.id, me, survived=False)
         await message.answer(
             f"{who} умер(( Воскрешение запланировано через 1 час, "
             "зря ты игрался",
             parse_mode="HTML",
         )
         return
+    async with async_session_maker() as session:
+        await DuelDAO(session).record_roulette(message.chat.id, me, survived=True)
     await message.answer(
         f"{who} остался жив! Лучше не играй с такими вещами...",
         parse_mode="HTML",
@@ -191,14 +216,14 @@ async def flag_up_cmd(message: Message):
 
     me_id, me_tag, me_name = _me(message.from_user)
     async with async_session_maker() as session:
-        raised = await DuelDAO(session).raise_flag(
-            message.chat.id, me_id, me_tag, me_name
-        )
+        dao = DuelDAO(session)
+        raised = await dao.raise_flag(message.chat.id, me_id, me_tag, me_name)
+        name = await _plain_name(session, me_id, me_tag, me_name)
     if not raised:
         await message.reply("Ты уже под белым флагом!")
         return
     await message.answer(
-        f"{_who(me_id, me_tag, me_name)} теперь под белым флагом!",
+        f"{name} теперь под белым флагом!",
         parse_mode="HTML",
     )
 
@@ -211,13 +236,14 @@ async def flag_down_cmd(message: Message):
 
     me_id, me_tag, me_name = _me(message.from_user)
     async with async_session_maker() as session:
-        lowered = await DuelDAO(session).lower_flag(message.chat.id, me_id)
+        dao = DuelDAO(session)
+        lowered = await dao.lower_flag(message.chat.id, me_id)
+        name = await _plain_name(session, me_id, me_tag, me_name)
     if not lowered:
         await message.reply("Ты и так без белого флага.")
         return
     await message.answer(
-        f"{_who(me_id, me_tag, me_name)} больше не под белым флагом! "
-        "Можно атаковать",
+        f"{name} больше не под белым флагом! Можно атаковать",
         parse_mode="HTML",
     )
 
@@ -230,15 +256,14 @@ async def peaceful_cmd(message: Message):
 
     async with async_session_maker() as session:
         flags = await DuelDAO(session).list_flags(message.chat.id)
-
-    if not flags:
-        await message.answer("🕊️ Белых флагов нет — все уязвимы ⚔️")
-        return
-
-    lines = ["🕊️ <b>Мирные — под белым флагом</b>", DIVIDER]
-    for flag in flags:
-        until = (flag.raised_at + FLAG_TTL).strftime("%d.%m")
-        lines.append(f"• {_who(flag.user_id, flag.username, flag.display)} — до {until}")
+        if not flags:
+            await message.answer("🕊️ Белых флагов нет — все уязвимы ⚔️")
+            return
+        lines = ["🕊️ <b>Мирные — под белым флагом</b>", DIVIDER]
+        for flag in flags:
+            until = (flag.raised_at + FLAG_TTL).strftime("%d.%m")
+            name = await _plain_name(session, flag.user_id, flag.username, flag.display)
+            lines.append(f"• {name} — до {until}")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
@@ -250,18 +275,72 @@ async def graveyard_cmd(message: Message):
 
     async with async_session_maker() as session:
         dead = await DuelDAO(session).list_dead(message.chat.id)
+        if not dead:
+            await message.answer("🪦 Кладбище пусто — все живы 🎉")
+            return
+        now = msk_now()
+        lines = ["🪦 <b>Кладбище</b>", DIVIDER]
+        for soul in dead:
+            left = soul.resurrect_at - now
+            when = "вот-вот" if left.total_seconds() <= 0 else f"через {_left(left)}"
+            name = await _plain_name(
+                session, soul.user_id, soul.username, soul.display
+            )
+            lines.append(f"• {name} — воскреснет {when}")
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
-    if not dead:
-        await message.answer("🪦 Кладбище пусто — все живы 🎉")
+
+class TopDuel(BaseFilter):
+    """«!топ дуэлей» — ловим раньше обычного !топ (наш роутер идёт раньше)."""
+
+    async def __call__(self, message: Message) -> bool:
+        if not message.text:
+            return False
+        parts = message.text.strip().casefold().split()
+        return (
+            len(parts) >= 2 and parts[0] == "!топ" and parts[1] in DUEL_TOP_WORDS
+        )
+
+
+@duel_router.message(TopDuel())
+async def top_duelists(message: Message):
+    if not _is_group(message):
+        await message.reply(GROUP_ONLY)
         return
 
-    now = msk_now()
-    lines = ["🪦 <b>Кладбище</b>", DIVIDER]
-    for soul in dead:
-        left = soul.resurrect_at - now
-        when = "вот-вот" if left.total_seconds() <= 0 else f"через {_left(left)}"
-        lines.append(
-            f"• {_who(soul.user_id, soul.username, soul.display)} — "
-            f"воскреснет {when}"
-        )
+    async with async_session_maker() as session:
+        dao = DuelDAO(session)
+        winners, losers = await dao.top_fighters(message.chat.id)
+        if not winners and not losers:
+            await message.reply(
+                "Дуэлей и рулеток ещё не было — начни с "
+                "<code>!дуэль</code> или <code>!рулетка</code>.",
+                parse_mode="HTML",
+            )
+            return
+        lines = ["⚔️ <b>Топ дуэлянтов</b>", DIVIDER]
+        if winners:
+            lines.append("👑 <b>Чаще выигрывают:</b>")
+            for place, row in enumerate(winners, start=1):
+                total = row.duel_wins + row.roulette_wins
+                name = await _plain_name(
+                    session, row.user_id, row.username, row.display
+                )
+                medal = MEDALS.get(place, f"{place}.")
+                lines.append(
+                    f"{medal} {name} — {total} "
+                    f"{plural(total, 'победа', 'победы', 'побед')}"
+                )
+        if losers:
+            lines.append("💀 <b>Чаще проигрывают:</b>")
+            for place, row in enumerate(losers, start=1):
+                total = row.duel_losses + row.roulette_losses
+                name = await _plain_name(
+                    session, row.user_id, row.username, row.display
+                )
+                medal = MEDALS.get(place, f"{place}.")
+                lines.append(
+                    f"{medal} {name} — {total} "
+                    f"{plural(total, 'поражение', 'поражения', 'поражений')}"
+                )
     await message.answer("\n".join(lines), parse_mode="HTML")
