@@ -81,6 +81,16 @@ async def import_batch(path: str) -> None:
 
     await init_db()
     async with async_session_maker() as session:
+        # Живая база старше кода: каких-то таблиц (например quote_ratings —
+        # legacy прошлых экспериментов) в ней может не быть. Ссылки
+        # пересчитываем только там, где таблица реально есть.
+        existing = {
+            row[0]
+            for row in (await session.execute(
+                sql("SELECT name FROM sqlite_master WHERE type='table'")
+            )).all()
+        }
+        refs = [(table, column) for table, column in REFS if table in existing]
         existing = {
             clean_text(row[0]).casefold()
             for row in (await session.execute(
@@ -116,7 +126,7 @@ async def import_batch(path: str) -> None:
         await session.execute(
             sql("UPDATE quotes SET id = id + :off WHERE id >= :at"), params
         )
-        for table, column in REFS:
+        for table, column in refs:
             await session.execute(
                 sql(f"UPDATE {table} SET {column} = {column} + :off "
                     f"WHERE {column} >= :at"),
@@ -137,7 +147,7 @@ async def import_batch(path: str) -> None:
                 "WHERE id >= :at + :off"),
             params,
         )
-        for table, column in REFS:
+        for table, column in refs:
             await session.execute(
                 sql(f"UPDATE {table} SET {column} = {column} - :off + :n "
                     f"WHERE {column} >= :at + :off"),
