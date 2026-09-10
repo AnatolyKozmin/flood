@@ -15,10 +15,13 @@ from handlers.command_profile import profile_router
 from handlers.command_all import all_router
 from handlers.command_quotes_top import quotes_top_router
 from handlers.command_battle import battle_router
+from handlers.command_duel import duel_router
 from handlers.command_admin import admin_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
+from middlewares.dead_mute import DeadMuteMiddleware
 from middlewares.admin_promote import AdminPromoteMiddleware
 from database.engine import init_db, close_db
+from utils.duel_scheduler import duel_worker
 # ДР: from utils.birthday import birthday_worker
 
 load_dotenv()
@@ -41,8 +44,13 @@ dp.include_router(tarot_router)
 # до обычного !топ, иначе он посчитает «цитат» неизвестным периодом.
 dp.include_router(quotes_top_router)
 dp.include_router(battle_router)
+dp.include_router(duel_router)
 dp.include_router(top_router)
 dp.include_router(all_router)
+
+# Мёртвые молчат: идёт первой, чтобы сообщения погибших не считались
+# в статистику и не срабатывали командами, а просто удалялись.
+dp.message.outer_middleware(DeadMuteMiddleware())
 
 # Считает сообщения для !топ и !стата. outer — значит срабатывает раньше
 # фильтров: считаются все сообщения, а не только те, что попали в команды.
@@ -54,12 +62,14 @@ dp.message.outer_middleware(AdminPromoteMiddleware())
 
 async def main():
     await init_db()
+    duel_task = asyncio.create_task(duel_worker(bot))
     # ДР: поздравления с днём рождения. Как включить — см. utils/birthday.py
     # ДР: birthday_task = asyncio.create_task(birthday_worker(bot))
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
+        duel_task.cancel()
         # ДР: birthday_task.cancel()
         await flush_stats()  # дописать счётчики, что не успели уйти в базу
         await close_db()

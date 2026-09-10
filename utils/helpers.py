@@ -11,6 +11,12 @@ def moscow_today():
     return datetime.now(MSK).date()
 
 
+def msk_now():
+    """Текущее время по Москве, наивное — в таком виде лежат DateTime
+    в базе (дуэли, дни рождения)."""
+    return datetime.now(MSK).replace(tzinfo=None)
+
+
 def first_last(fio: str) -> str:
     """'Фамилия Имя Отчество' → 'Имя Фамилия'"""
     parts = fio.strip().split()
