@@ -51,6 +51,15 @@ class DuelDAO:
         query = select(DeadSoul).where(DeadSoul.resurrect_at <= now)
         return list((await self.session.execute(query)).scalars().all())
 
+    async def list_dead(self, chat_id: int) -> list[DeadSoul]:
+        """Все мёртвые чата — для !кладбище. Ближайшее воскрешение первым."""
+        query = (
+            select(DeadSoul)
+            .where(DeadSoul.chat_id == chat_id)
+            .order_by(DeadSoul.resurrect_at)
+        )
+        return list((await self.session.execute(query)).scalars().all())
+
     async def revive(self, soul: DeadSoul) -> None:
         await self.session.delete(soul)
         await self.session.commit()
@@ -62,6 +71,16 @@ class DuelDAO:
             WhiteFlag.chat_id == chat_id, WhiteFlag.user_id == user_id
         )
         return (await self.session.execute(query)).scalars().first()
+
+    async def list_flags(self, chat_id: int) -> list[WhiteFlag]:
+        """Все поднятые флаги чата — для !мирные. Давно поднятые первыми
+        (они раньше и слетят)."""
+        query = (
+            select(WhiteFlag)
+            .where(WhiteFlag.chat_id == chat_id)
+            .order_by(WhiteFlag.raised_at)
+        )
+        return list((await self.session.execute(query)).scalars().all())
 
     async def raise_flag(
         self, chat_id: int, user_id: int, username: str, display: str,

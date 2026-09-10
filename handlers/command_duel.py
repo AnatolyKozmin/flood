@@ -15,9 +15,12 @@ from aiogram import Router
 from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
-from database.duel_dao import DuelDAO
+from database.duel_dao import DuelDAO, FLAG_TTL
 from database.engine import async_session_maker
 from database.stats_dao import StatsDAO
+from utils.format import DIVIDER
+from utils.helpers import msk_now
+from utils.stats import plural
 
 duel_router = Router()
 
@@ -25,6 +28,8 @@ DUEL_CMD = "!дуэль"
 ROULETTE_CMD = "!рулетка"
 FLAG_UP_CMDS = ("!поднять флаг", "!подними флаг")
 FLAG_DOWN_CMDS = ("!опустить флаг", "!опусти флаг")
+PEACEFUL_CMD = "!мирные"
+GRAVEYARD_CMD = "!кладбище"
 
 ROULETTE_DEATH_CHANCE = 1 / 6
 
@@ -99,6 +104,16 @@ async def _resolve_target(message: Message) -> tuple[int, str, str] | None:
         parse_mode="HTML",
     )
     return None
+
+
+def _left(delta) -> str:
+    """Остаток времени по-человечески: «5 мин», «1 ч 10 мин»."""
+    minutes = max(0, int(delta.total_seconds() // 60))
+    if minutes < 60:
+        return f"{minutes} {plural(minutes, 'минуту', 'минуты', 'минут')}"
+    hours, rest = divmod(minutes, 60)
+    tail = f" {rest} {plural(rest, 'минуту', 'минуты', 'минут')}" if rest else ""
+    return f"{hours} {plural(hours, 'час', 'часа', 'часов')}{tail}"
 
 
 def _is_group(message: Message) -> bool:
@@ -205,3 +220,48 @@ async def flag_down_cmd(message: Message):
         "Можно атаковать",
         parse_mode="HTML",
     )
+
+
+@duel_router.message(FirstWord(PEACEFUL_CMD))
+async def peaceful_cmd(message: Message):
+    if not _is_group(message):
+        await message.reply(GROUP_ONLY)
+        return
+
+    async with async_session_maker() as session:
+        flags = await DuelDAO(session).list_flags(message.chat.id)
+
+    if not flags:
+        await message.answer("🕊️ Белых флагов нет — все уязвимы ⚔️")
+        return
+
+    lines = ["🕊️ <b>Мирные — под белым флагом</b>", DIVIDER]
+    for flag in flags:
+        until = (flag.raised_at + FLAG_TTL).strftime("%d.%m")
+        lines.append(f"• {_who(flag.user_id, flag.username, flag.display)} — до {until}")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@duel_router.message(FirstWord(GRAVEYARD_CMD))
+async def graveyard_cmd(message: Message):
+    if not _is_group(message):
+        await message.reply(GROUP_ONLY)
+        return
+
+    async with async_session_maker() as session:
+        dead = await DuelDAO(session).list_dead(message.chat.id)
+
+    if not dead:
+        await message.answer("🪦 Кладбище пусто — все живы 🎉")
+        return
+
+    now = msk_now()
+    lines = ["🪦 <b>Кладбище</b>", DIVIDER]
+    for soul in dead:
+        left = soul.resurrect_at - now
+        when = "вот-вот" if left.total_seconds() <= 0 else f"через {_left(left)}"
+        lines.append(
+            f"• {_who(soul.user_id, soul.username, soul.display)} — "
+            f"воскреснет {when}"
+        )
+    await message.answer("\n".join(lines), parse_mode="HTML")
