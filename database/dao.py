@@ -65,15 +65,18 @@ class ActivistsDAO(BaseDAO):
         # Ники в базе хранятся вразнобой: часть с '@', часть без, разный регистр.
         # Telegram отдаёт username без '@' — нормализуем обе стороны, иначе
         # автор не находится и в цитатах вместо ФИО показывается ник.
+        # Берём первого, а не one_or_none: в живой базе встречаются дубли
+        # (один тег у двух людей) — падать с MultipleResultsFound нельзя,
+        # это роняло !кладбище целиком.
         normalized = (tg_username or "").strip().lstrip("@").lower()
         if not normalized:
             return None
         res = await self.session.execute(
             select(self.model).where(
                 func.lower(func.replace(self.model.tg_username, "@", "")) == normalized
-            )
+            ).limit(1)
         )
-        return res.scalar_one_or_none()
+        return res.scalars().first()
 
 
 class QuotesDAO(BaseDAO):
