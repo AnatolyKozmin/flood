@@ -51,6 +51,11 @@ class BattleSession(Base):
     right_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Пары, которые уже показывали в этой сессии: "3-7,1-9" — чтобы не повторяться.
     seen: Mapped[str] = mapped_column(String, default="")
+    # Круговой турнир: пул из 5 цитат и очередь всех 10 пар "a-b".
+    # Колонки добавлены позже первых сессий — на живой базе дотягиваются
+    # через BattleDAO.ensure_pool_columns(), create_all так не умеет.
+    pool: Mapped[str] = mapped_column(String, default="")
+    queue: Mapped[str] = mapped_column(String, default="")
 
     started_at: Mapped[datetime] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -2,8 +2,8 @@
 import random
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Quotes
@@ -149,24 +149,48 @@ class BattleDAO:
     def _key(a: int, b: int) -> str:
         return f"{min(a, b)}-{max(a, b)}"
 
-    async def next_pair(self, battle: BattleSession) -> tuple[int, int] | None:
-        """Случайная пара, которой ещё не было в этой сессии."""
-        ids = await self.quote_ids()
-        if len(ids) < 2:
-            return None
-        seen = set(battle.seen.split(",")) if battle.seen else set()
+    async def ensure_pool_columns(self) -> None:
+        """Дотянуть колонки кругового турнира на живой базе.
 
-        pairs = [
-            (a, b)
-            for i, a in enumerate(ids)
-            for b in ids[i + 1:]
-            if self._key(a, b) not in seen
-        ]
-        if not pairs:
+        create_all создаёт только новые таблицы, колонки в существующие
+        не добавляет — поэтому ALTER руками. Идемпотентно: повторный
+        вызов падает в OperationalError и молча проходит."""
+        for column in ("pool", "queue"):
+            try:
+                await self.session.execute(
+                    text(f"ALTER TABLE battle_sessions ADD COLUMN {column} VARCHAR(512) DEFAULT ''")
+                )
+            except OperationalError:
+                pass
+        await self.session.commit()
+
+    async def setup_round_robin(self, battle: BattleSession, ids: list[int]) -> bool:
+        """Круговой турнир: пул из 5 случайных цитат, все 10 пар
+        в случайном порядке. False — цитат меньше пяти."""
+        if len(ids) < 5:
+            return False
+        pool = random.sample(ids, 5)
+        pairs = [(a, b) for i, a in enumerate(pool) for b in pool[i + 1:]]
+        random.shuffle(pairs)
+        battle.pool = ",".join(map(str, pool))
+        battle.queue = ",".join(f"{a}-{b}" for a, b in pairs)
+        await self.session.commit()
+        return True
+
+    async def next_queued_pair(self, battle: BattleSession) -> tuple[int, int] | None:
+        """Следующая пара турнира. None — пары кончились, время итога."""
+        if not battle.queue:
             return None
-        left, right = random.choice(pairs)
-        if random.random() < 0.5:          # чтобы «первая» не была всегда сверху
+        head, _, rest = battle.queue.partition(",")
+        battle.queue = rest
+        try:
+            left, right = (int(x) for x in head.split("-"))
+        except ValueError:
+            # Битая запись — пропускаем, очередь всё равно убывает.
+            return await self.next_queued_pair(battle)
+        if random.random() < 0.5:  # кто сверху — случайно, не по жребию пула
             left, right = right, left
+        await self.session.commit()
         return left, right
 
     async def set_pair(self, battle: BattleSession, left: int, right: int) -> None:

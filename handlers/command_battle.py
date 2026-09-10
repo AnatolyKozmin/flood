@@ -34,7 +34,7 @@ from utils.stats import plural
 battle_router = Router()
 
 CB = "bt"
-MIN_QUOTES = 4  # меньше — и пары начнут повторяться уже на втором раунде
+MIN_QUOTES = 5  # круговой турнир — это пул из пяти и все 10 пар
 
 
 class StartsWith(BaseFilter):
@@ -98,23 +98,26 @@ async def _swap(bot: Bot, battle, dao: BattleDAO, photo: BufferedInputFile,
 
 
 async def _show_round(bot: Bot, battle, dao: BattleDAO) -> bool:
-    """Нарисовать очередную пару. False — если пары кончились."""
-    pair = await dao.next_pair(battle)
-    if pair is None:
-        return False
-    left, right = pair
-    await dao.set_pair(battle, left, right)
+    """Нарисовать очередную пару турнира. False — если пары кончились."""
+    while True:
+        pair = await dao.next_queued_pair(battle)
+        if pair is None:
+            return False
+        left, right = pair
+        await dao.set_pair(battle, left, right)
 
-    quotes = await dao.quotes_by_ids([left, right])
-    img = await _compose(bot, quotes[left], quotes[right])
-    img.seek(0)
-    await _swap(
-        bot, battle, dao,
-        BufferedInputFile(img.read(), filename=f"battle_{battle.round + 1}.png"),
-        _caption(battle.round + 1),
-        _kb(battle.id, battle.round),
-    )
-    return True
+        quotes = await dao.quotes_by_ids([left, right])
+        if left not in quotes or right not in quotes:
+            continue  # цитату снесли посреди сессии — берём следующую пару
+        img = await _compose(bot, quotes[left], quotes[right])
+        img.seek(0)
+        await _swap(
+            bot, battle, dao,
+            BufferedInputFile(img.read(), filename=f"battle_{battle.round + 1}.png"),
+            _caption(battle.round + 1),
+            _kb(battle.id, battle.round),
+        )
+        return True
 
 
 async def _finish(bot: Bot, battle, dao: BattleDAO) -> None:
@@ -156,10 +159,11 @@ async def _finish(bot: Bot, battle, dao: BattleDAO) -> None:
 async def battle_cmd(message: Message):
     async with async_session_maker() as session:
         dao = BattleDAO(session)
+        await dao.ensure_pool_columns()
         ids = await dao.quote_ids()
         if len(ids) < MIN_QUOTES:
             await message.reply(
-                f"Для батла нужно хотя бы {MIN_QUOTES} цитаты, сейчас {len(ids)}. "
+                f"Для батла нужно хотя бы {MIN_QUOTES} цитат, сейчас {len(ids)}. "
                 "Сохраните ещё через <code>!цитата</code>.",
                 parse_mode="HTML",
             )
@@ -168,6 +172,11 @@ async def battle_cmd(message: Message):
         # Батл делает только один человек за раз — иначе картинки и кнопки
         # двух сессий перемешаются во флуде.
         active = await dao.active_in_chat(message.chat.id)
+        if active is not None and not active.queue:
+            # Остаток старого формата (пары брались случайно, без очереди):
+            # доиграть его нельзя, молча закрываем и не блокируем новый.
+            await dao.finish(active)
+            active = None
         if active is not None:
             users = await StatsDAO(session).users([active.user_id])
             found = users.get(active.user_id)
@@ -188,6 +197,9 @@ async def battle_cmd(message: Message):
             return
 
         battle = await dao.start(message.from_user.id, message.chat.id)
+        if not await dao.setup_round_robin(battle, ids):
+            await message.reply("Не смог собрать пятёрку цитат — странно, попробуй ещё раз.")
+            return
         if not await _show_round(message.bot, battle, dao):
             await message.reply("Не смог собрать пару цитат — странно, попробуй ещё раз.")
 
