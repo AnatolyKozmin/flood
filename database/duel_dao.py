@@ -64,6 +64,17 @@ class DuelDAO:
         await self.session.delete(soul)
         await self.session.commit()
 
+    async def list_all(self) -> list[DeadSoul]:
+        """Все мёртвые во всех чатах — для админской кнопки воскрешения."""
+        query = select(DeadSoul).order_by(DeadSoul.resurrect_at)
+        return list((await self.session.execute(query)).scalars().all())
+
+    async def revive_all(self) -> int:
+        """Воскресить всех сразу. Возвращает сколько воскресил."""
+        result = await self.session.execute(delete(DeadSoul))
+        await self.session.commit()
+        return result.rowcount or 0
+
     # ── флаги ──
 
     async def get_flag(self, chat_id: int, user_id: int) -> WhiteFlag | None:

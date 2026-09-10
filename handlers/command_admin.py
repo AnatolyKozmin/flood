@@ -27,6 +27,7 @@ from aiogram.types import (
 )
 
 from database.admin_dao import AdminDAO, PendingDAO, RosterDAO
+from database.duel_dao import DuelDAO
 from database.models import Activists
 from database.profile_models import ActivistLink
 from sqlalchemy import func, select
@@ -88,11 +89,14 @@ def _btn(text: str, action: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=f"{CB}:{action}")
 
 
-def _panel_kb(is_owner: bool) -> InlineKeyboardMarkup:
+async def _panel_kb(is_owner: bool) -> InlineKeyboardMarkup:
+    async with async_session_maker() as session:
+        dead = len(await DuelDAO(session).list_all())
     rows = [
         [_btn("📊 Кто привязал телеграм", "stats")],
         [_btn("📥 Выгрузить Excel", "export")],
         [_btn("📤 Загрузить Excel", "import")],
+        [_btn(f"🪦 Воскресить{f' ({dead})' if dead else ''}", "revive")],
     ]
     if is_owner:
         rows.append([_btn("👥 Админы", "admins")])
@@ -153,14 +157,14 @@ async def panel_cmd(message: Message, state: FSMContext):
         await message.delete()
     except TelegramAPIError:
         pass
-    await _paint(message, PANEL_TEXT, _panel_kb(message.from_user.id == owner_id()))
+    await _paint(message, PANEL_TEXT, await _panel_kb(message.from_user.id == owner_id()))
 
 
 @admin_router.callback_query(F.data == f"{CB}:panel", AdminPrivate())
 async def cb_panel(call: CallbackQuery, state: FSMContext):
     await state.clear()
     await call.answer()
-    await _paint(call, PANEL_TEXT, _panel_kb(call.from_user.id == owner_id()))
+    await _paint(call, PANEL_TEXT, await _panel_kb(call.from_user.id == owner_id()))
 
 
 # ─────────────────────────── статистика регистраций ───────────────────────────
@@ -381,6 +385,108 @@ async def cb_apply(call: CallbackQuery, state: FSMContext):
 @admin_router.callback_query(Admin.confirm, F.data == f"{CB}:apply_drop", AdminPrivate())
 async def cb_apply_drop(call: CallbackQuery, state: FSMContext):
     await _apply(call, state, drop_missing=True)
+
+
+# ─────────────────────────── воскрешение ───────────────────────────
+
+REVIVE_LIMIT = 15  # сколько мёртвых показать кнопками (остальные — через «всех»)
+
+
+def _dead_who(soul) -> tuple[str, str]:
+    """Коротко для кнопки и полно для строки: (кнопка, строка)."""
+    tag = (soul.username or "").strip().lstrip("@")
+    if tag:
+        return f"@{tag}", f"@{html.escape(tag)}"
+    name = html.escape((soul.display or "").strip() or "боец")
+    full = f'<a href="tg://user?id={soul.user_id}">{name}</a>'
+    return (soul.display or "боец")[:24], full
+
+
+async def _chat_name(bot: Bot, chat_id: int) -> str:
+    try:
+        chat = await bot.get_chat(chat_id)
+        if chat.title:
+            return f"«{html.escape(chat.title)}»"
+    except Exception:
+        logger.debug("get_chat %s не сработал", chat_id, exc_info=True)
+    return f"<code>{chat_id}</code>"
+
+
+async def _announce_revive(bot: Bot, soul) -> None:
+    """Сказать во флуд, что человек воскрес. Не вышло (бота выгнали) —
+    не страшно: запись всё равно удаляем, человек и так ожил."""
+    try:
+        await bot.send_message(
+            soul.chat_id,
+            f"Возрадуемся! {_dead_who(soul)[1]} воскрес!\nУдачи в следующий раз",
+            parse_mode="HTML",
+        )
+    except Exception:
+        logger.warning("Не смог объявить воскрешение %s в %s",
+                       soul.user_id, soul.chat_id, exc_info=True)
+
+
+async def _revive_screen(target: CallbackQuery) -> None:
+    async with async_session_maker() as session:
+        dead = await DuelDAO(session).list_all()
+
+    if not dead:
+        await _paint(target, "🪦 <b>Воскрешение</b>\n" + DIVIDER + "\n"
+                     "Мёртвых нет — все живы 🎉", _back_kb())
+        return
+
+    lines = ["🪦 <b>Кого воскресить</b>", DIVIDER]
+    rows = []
+    for soul in dead[:REVIVE_LIMIT]:
+        short, full = _dead_who(soul)
+        chat = await _chat_name(target.bot, soul.chat_id)
+        lines.append(f"• {full} — {chat}")
+        rows.append([_btn(f"✅ {short}", f"rz:{soul.chat_id}:{soul.user_id}")])
+    if len(dead) > REVIVE_LIMIT:
+        lines.append(f"<i>…и ещё {len(dead) - REVIVE_LIMIT} — их воскресит кнопка ниже</i>")
+    rows.append([_btn(f"✅ Воскресить всех ({len(dead)})", "rzall")])
+    rows.append([_btn("↩️ В панель", "panel")])
+    await _paint(target, "\n".join(lines), _kb(*rows))
+
+
+@admin_router.callback_query(F.data == f"{CB}:revive", AdminPrivate())
+async def cb_revive(call: CallbackQuery):
+    await call.answer()
+    await _revive_screen(call)
+
+
+@admin_router.callback_query(F.data == f"{CB}:rzall", AdminPrivate())
+async def cb_revive_all(call: CallbackQuery):
+    async with async_session_maker() as session:
+        dao = DuelDAO(session)
+        souls = await dao.list_all()
+        await dao.revive_all()
+    for soul in souls:
+        await _announce_revive(call.bot, soul)
+    await call.answer(f"Воскресил: {len(souls)}")
+    logger.info("Админ %s воскресил всех (%s)", call.from_user.id, len(souls))
+    await _revive_screen(call)
+
+
+@admin_router.callback_query(F.data.startswith(f"{CB}:rz:"), AdminPrivate())
+async def cb_revive_one(call: CallbackQuery):
+    try:
+        _, _, raw_chat, raw_user = call.data.split(":")
+        chat_id, user_id = int(raw_chat), int(raw_user)
+    except ValueError:
+        await call.answer()
+        return
+    async with async_session_maker() as session:
+        dao = DuelDAO(session)
+        soul = await dao.is_dead(chat_id, user_id)
+        if soul is None:
+            await call.answer("Он уже воскрес сам")
+        else:
+            await dao.revive(soul)
+            await _announce_revive(call.bot, soul)
+            await call.answer("Воскресил")
+            logger.info("Админ %s воскресил %s", call.from_user.id, user_id)
+    await _revive_screen(call)
 
 
 # ─────────────────────────── управление админами ───────────────────────────
