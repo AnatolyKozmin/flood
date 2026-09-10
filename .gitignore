@@ -5,3 +5,12 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .idea/.DS_Store
+
+# Живая база бота: перетиралась каждым git pull/reset (см. reflog на сервере).
+# Хранится только на сервере в ./database/, в репозиторий не коммитить.
+database/bot.db
+database/*.bak*
+database/*.safe
+database/*.db-wal
+database/*.db-shm
+database/*.db-journal
