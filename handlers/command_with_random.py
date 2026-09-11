@@ -141,7 +141,7 @@ MAKAN_CAPTION = "Я говорю Macan, вы говорите ..."
 
 def _makan_photo() -> Path | None:
     for ext in _MAKAN_EXTS:
-        candidate = _MAKAN_ASSETS / f"makan{ext}"
+        candidate = _MAKAN_ASSETS / f"macan{ext}"
         if candidate.is_file():
             return candidate
     return None
