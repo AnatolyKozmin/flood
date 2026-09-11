@@ -159,13 +159,12 @@ async def _screen_text(is_owner: bool) -> tuple[str, InlineKeyboardMarkup]:
         if is_owner:
             lines += ["", "<b>Заместитель:</b>"]
             if deputy is None:
-                lines.append("<i>Никого — назначь кнопкой ниже.</i>")
-                rows.append([_btn("➕ Назначить заместителя", "dep_add")])
+                lines.append("<i>Никого нет.</i>")
             else:
                 who = (f"@{html.escape(deputy.username.lstrip('@'))}"
                        if deputy.username else f"<code>{deputy.tg_id}</code>")
                 lines.append(f"• {who}")
-                rows.append([_btn("🗑 Забрать доступ", "dep_del")])
+            rows.append([_btn("👤 Заместитель", "deputy")])
 
     return "\n".join(lines), _kb(*rows) if rows else None
 
@@ -249,7 +248,8 @@ async def cb_dep_add(call: CallbackQuery, state: FSMContext):
     await call.answer()
     async with async_session_maker() as session:
         if await DeputyDAO(session).get() is not None:
-            await call.answer("Место занято — сначала забери доступ", show_alert=True)
+            await call.answer("Место занято — сначала удали", show_alert=True)
+            await _deputy_screen(call)
             return
     await state.set_state(Mod.wait_deputy)
     await _paint(
@@ -257,8 +257,45 @@ async def cb_dep_add(call: CallbackQuery, state: FSMContext):
         "➕ <b>Кого назначить?</b>\n" + DIVIDER + "\n"
         "Пришли @тег, id числом или перешли сюда его сообщение.\n\n"
         "<i>Место одно: пока доступ у кого-то есть, нового не назначить.</i>",
-        _kb([_btn("↩️ Назад", "panel")]),
+        _kb([_btn("↩️ Назад", "deputy")]),
     )
+
+
+async def _deputy_screen(target: Message | CallbackQuery) -> None:
+    """Отдельная страница заместителя: есть он или нет + добавить/удалить."""
+    async with async_session_maker() as session:
+        deputy = await DeputyDAO(session).get()
+    if deputy is None:
+        text = (
+            "👤 <b>Заместитель</b>\n" + DIVIDER + "\n"
+            "Никого нет — модерацию видишь только ты.\n\n"
+            "<i>Доступ включает только эту панель, "
+            "обычной админки зам не видит.</i>"
+        )
+        kb = _kb(
+            [_btn("➕ Добавить", "dep_add")],
+            [_btn("↩️ В панель", "panel")],
+        )
+    else:
+        who = (f"@{html.escape(deputy.username.lstrip('@'))}"
+               if deputy.username else f"<code>{deputy.tg_id}</code>")
+        text = (
+            "👤 <b>Заместитель</b>\n" + DIVIDER + "\n"
+            f"• {who}\n\n"
+            "<i>Место одно — нового назначить нельзя, пока есть этот.</i>"
+        )
+        kb = _kb(
+            [_btn("🗑 Удалить", "dep_del")],
+            [_btn("↩️ В панель", "panel")],
+        )
+    await _paint(target, text, kb)
+
+
+@mod_router.callback_query(F.data == f"{CB}:deputy", OwnerOnly())
+async def cb_deputy(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.answer()
+    await _deputy_screen(call)
 
 
 async def _resolve_person(bot: Bot, message: Message) -> tuple[int | None, str | None]:
@@ -312,7 +349,8 @@ async def on_deputy(message: Message, state: FSMContext):
     async with async_session_maker() as session:
         granted = await DeputyDAO(session).grant(tg_id, username or "", message.from_user.id)
     if not granted:
-        await message.answer("Пока доступ у кого-то есть — сначала забери.")
+        await message.answer("Пока доступ у кого-то есть — сначала удали.")
+        await _deputy_screen(message)
         return
     logger.info("Владелец %s назначил заместителя %s", message.from_user.id, tg_id)
     await _show(message, state)
@@ -324,4 +362,4 @@ async def cb_dep_del(call: CallbackQuery, state: FSMContext):
         removed = await DeputyDAO(session).revoke()
     await call.answer("Доступ забран" if removed else "И так никого")
     logger.info("Владелец %s забрал заместителя", call.from_user.id)
-    await _show(call, state)
+    await _deputy_screen(call)
