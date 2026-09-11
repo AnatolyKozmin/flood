@@ -8,8 +8,10 @@
 !поднять флаг — защита от дуэлей на 3 дня, !опустить флаг — снять.
 !рулетка — шанс 1 к 6 умереть на час.
 """
+import asyncio
 import html
 import random
+from dataclasses import dataclass
 
 from aiogram import Router
 from aiogram.filters import BaseFilter
@@ -19,6 +21,7 @@ from database.dao import ActivistsDAO
 from database.duel_dao import DuelDAO, FLAG_TTL
 from database.engine import async_session_maker
 from database.stats_dao import StatsDAO
+from datetime import timedelta
 from utils.format import DIVIDER
 from utils.helpers import first_last, msk_now
 from utils.stats import plural
@@ -344,3 +347,141 @@ async def top_duelists(message: Message):
                     f"{plural(total, 'поражение', 'поражения', 'поражений')}"
                 )
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+# ─────────────────────────── матдуэль ───────────────────────────
+
+MATH_CMD = "!матдуэль"
+MATH_SECONDS = 60      # сколько ждём правильный ответ
+MATH_MUTE = timedelta(minutes=10)  # мут обоим, если не ответил никто
+
+
+@dataclass
+class MathDuel:
+    """Активная матдуэль чата. Живёт в памяти: окно всего минута,
+    переживать рестарт ей незачем (мьюты при этом лежат в базе)."""
+
+    chat_id: int
+    challenger: tuple[int, str, str]
+    target: tuple[int, str, str]
+    answer: int
+    task: asyncio.Task | None = None
+
+
+MATH: dict[int, MathDuel] = {}
+
+
+class MathAnswer(BaseFilter):
+    """Голое число от участника активной матдуэли.
+
+    Фильтр узкий специально: хендлер висит последним в роутере, который
+    идёт раньше топа, — широкий фильтр сожрал бы чужие команды."""
+
+    async def __call__(self, message: Message) -> bool:
+        if not message.text or message.chat.type not in ("group", "supergroup"):
+            return False
+        duel = MATH.get(message.chat.id)
+        if duel is None or message.from_user is None:
+            return False
+        if message.from_user.id not in (duel.challenger[0], duel.target[0]):
+            return False
+        return message.text.strip().isdigit()
+
+
+async def _math_timeout(chat_id: int, bot) -> None:
+    await asyncio.sleep(MATH_SECONDS)
+    duel = MATH.get(chat_id)
+    # Дуэль уже разыграли или заменили новой — чужие таймеры не трогаем.
+    if duel is None or MATH.get(chat_id) is not duel:
+        return
+    MATH.pop(chat_id, None)
+
+    async with async_session_maker() as session:
+        dao = DuelDAO(session)
+        for person in (duel.challenger, duel.target):
+            await dao.kill(chat_id, person[0], person[1], person[2], ttl=MATH_MUTE)
+    try:
+        await bot.send_message(
+            chat_id,
+            f"⏰ Время вышло! Правильный ответ: <b>{duel.answer}</b>.\n"
+            f"{_who(*duel.challenger)} и {_who(*duel.target)} молчат 10 минут.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+@duel_router.message(FirstWord(MATH_CMD))
+async def mathduel_cmd(message: Message):
+    if not _is_group(message):
+        await message.reply(GROUP_ONLY)
+        return
+
+    if MATH.get(message.chat.id) is not None:
+        await message.reply("Матдуэль уже идёт — отвечайте! Кто первый, тот и прав.")
+        return
+
+    target = await _resolve_target(message)
+    if target is None:
+        return
+    target_id, target_tag, target_name = target
+    me_id, me_tag, me_name = _me(message.from_user)
+
+    if target_id == me_id:
+        await message.reply("С самим собой в математику не играют.")
+        return
+
+    async with async_session_maker() as session:
+        dao = DuelDAO(session)
+        if await dao.is_dead(message.chat.id, target_id) is not None:
+            await message.reply("То, что мертво, умереть не может")
+            return
+        if await dao.get_flag(message.chat.id, target_id) is not None:
+            await message.reply("Белый флаг даёт неприкосновенность")
+            return
+
+    a, b, c = (random.randint(100, 999) for _ in range(3))
+    duel = MathDuel(
+        chat_id=message.chat.id,
+        challenger=(me_id, me_tag, me_name),
+        target=(target_id, target_tag, target_name),
+        answer=a + b + c,
+    )
+    MATH[message.chat.id] = duel
+    duel.task = asyncio.create_task(_math_timeout(message.chat.id, message.bot))
+
+    await message.answer(
+        f"🔢 <b>Матдуэль</b>: {_who(me_id, me_tag, me_name)} "
+        f"против {_who(target_id, target_tag, target_name)}\n"
+        f"Сколько будет <b>{a} + {b} + {c}</b>?\n"
+        f"<i>У вас {MATH_SECONDS} секунд — кто первый!</i>",
+        parse_mode="HTML",
+    )
+
+
+@duel_router.message(MathAnswer())
+async def mathduel_answer(message: Message):
+    duel = MATH.get(message.chat.id)
+    if duel is None:
+        return
+    if int(message.text.strip()) != duel.answer:
+        return  # мимо — молчим, чтобы не спамить на каждый чих
+
+    MATH.pop(message.chat.id, None)
+    if duel.task is not None:
+        duel.task.cancel()
+
+    me = _me(message.from_user)
+    winner, loser = (
+        (duel.challenger, duel.target)
+        if me[0] == duel.challenger[0]
+        else (duel.target, duel.challenger)
+    )
+    async with async_session_maker() as session:
+        await DuelDAO(session).record_duel(message.chat.id, winner, loser)
+
+    await message.answer(
+        f"🏆 {_who(*winner)} первым ответил правильно: <b>{duel.answer}</b>!\n"
+        f"{_who(*loser)} повержен.",
+        parse_mode="HTML",
+    )

@@ -25,22 +25,23 @@ class DuelDAO:
 
     async def kill(
         self, chat_id: int, user_id: int, username: str, display: str,
-        now: datetime | None = None,
+        now: datetime | None = None, ttl: timedelta | None = None,
     ) -> DeadSoul:
-        """Убить на час. Если запись уже есть (перестраховка — хендлеры
-        мёртвых не вызывают), просто продлеваем воскрешение."""
+        """Убить. По умолчанию на час, ttl — для коротких мутов
+        (матдуэль: 10 минут). Воскрешает общий планировщик по resurrect_at."""
         now = now or msk_now()
+        ttl = ttl or DEATH_TTL
         soul = await self.is_dead(chat_id, user_id)
         if soul is None:
             soul = DeadSoul(
                 chat_id=chat_id, user_id=user_id,
                 username=username or "", display=display or "",
-                dies_at=now, resurrect_at=now + DEATH_TTL,
+                dies_at=now, resurrect_at=now + ttl,
             )
             self.session.add(soul)
         else:
             soul.dies_at = now
-            soul.resurrect_at = now + DEATH_TTL
+            soul.resurrect_at = now + ttl
         await self.session.commit()
         return soul
 
