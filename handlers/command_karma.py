@@ -1,14 +1,12 @@
 """Карма: ответ «спасибо» — +1 автору сообщения.
 
-Спасибо засчитывается за сообщение-ответ из одного слова «спасибо»
-в любом регистре (знаки «!», «.» и т.п. на конце не мешают).
+Спасибо засчитывается только за сообщение-ответ из ровно одного слова
+«спасибо» в любом регистре. В ответ бот пишет, кому капнуло.
 Себе и ботам карму не капаем — иначе накрутка и бессмертные лидеры.
 """
-import re
-
 from aiogram import F, Router
 from aiogram.filters import BaseFilter
-from aiogram.types import Message, ReactionTypeEmoji
+from aiogram.types import Message
 
 from database.engine import async_session_maker
 from database.karma_dao import KarmaDAO
@@ -26,14 +24,13 @@ MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 GROUP_ONLY = "Эта команда для группового чата — карма живёт во флуде 🙂"
 
-_THANKS_RE = re.compile(r"^спасибо[\s!.,;:)\]]*$")
-
 
 def is_thanks(text: str | None) -> bool:
-    """Одно слово «спасибо» в любом регистре, можно со знаками на конце."""
+    """Ровно одно слово «спасибо» в любом регистре. «Спасибо!» и «спасибо
+    брат» — уже не считаются: только точное слово."""
     if not text:
         return False
-    return _THANKS_RE.match(text.strip().casefold()) is not None
+    return text.strip().casefold() == "спасибо"
 
 
 class TopKarma(BaseFilter):
@@ -71,11 +68,10 @@ async def thanks_cmd(message: Message):
             message.chat.id, target.id,
             target.username or "", target.full_name or "",
         )
-
-    try:
-        await message.react(reaction=[ReactionTypeEmoji(emoji="👍")])
-    except Exception:
-        pass  # реакции без прав — молча, карма уже капнула
+        name = await _plain_name(
+            session, target.id, target.username or "", target.full_name or ""
+        )
+    await message.reply(f"{name} получает +1 к карме")
 
 
 @karma_router.message(TopKarma())
