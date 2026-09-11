@@ -34,7 +34,8 @@ from aiogram.types import (
 from database.engine import async_session_maker
 from database.profile_dao import ProfileDAO
 from handlers.command_admin import is_admin
-from handlers.command_help import ADMIN_HELP, HELP_TEXT
+from handlers.command_help import ADMIN_HELP, HELP_TEXT, MOD_HELP
+from handlers.command_mod import is_mod
 from utils.format import DIVIDER, field, format_phone
 from utils.helpers import first_last, mention
 
@@ -225,8 +226,9 @@ def _shown(key: str, value) -> str:
     return str(value) if value else ""
 
 
-def _help_text(name: str, admin: bool = False) -> str:
+def _help_text(name: str, admin: bool = False, mod: bool = False) -> str:
     admin_block = ["", ADMIN_HELP] if admin else []
+    mod_block = ["", MOD_HELP] if mod else []
     return "\n".join([
         f"👋 <b>Привет, {name}!</b>",
         "Ты есть в базе актива ИК.",
@@ -236,6 +238,7 @@ def _help_text(name: str, admin: bool = False) -> str:
         "",
         _ABILITIES,
         *admin_block,
+        *mod_block,
         "",
         "<i>Команды про чат — топы, теги, цитаты — работают во флуде, не здесь.</i>",
     ])
@@ -312,7 +315,9 @@ async def _show_help(bot: Bot, chat_id: int, user_id: int, state: FSMContext,
         async with async_session_maker() as session:
             activist = await ProfileDAO(session).by_tg_id(user_id)
     name = first_last(activist.fio) if activist and activist.fio else "друг"
-    await _screen(bot, chat_id, user_id, _help_text(name, await is_admin(user_id)))
+    await _screen(bot, chat_id, user_id, _help_text(
+        name, await is_admin(user_id), await is_mod(user_id)
+    ))
 
 
 async def _show_question(bot: Bot, chat_id: int, user_id: int, state: FSMContext,

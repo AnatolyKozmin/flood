@@ -2,6 +2,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 
 from handlers.command_admin import is_admin
+from handlers.command_mod import is_mod
 
 help_router = Router()
 
@@ -57,6 +58,10 @@ ADMIN_HELP = """🛠 <b>Только для админов:</b>
 <code>!id</code> — узнать свой telegram id"""
 
 
+MOD_HELP = """🔇 <b>Модерация:</b>
+<code>!модерация</code> — замутить и размутить троих, заместитель"""
+
+
 async def with_admin_block(text: str, message: Message) -> str:
     """Дописать админский блок, если спрашивает админ и спрашивает в личке.
 
@@ -70,6 +75,20 @@ async def with_admin_block(text: str, message: Message) -> str:
     return f"{text}\n\n{ADMIN_HELP}"
 
 
+async def with_mod_block(text: str, message: Message) -> str:
+    """Строка про модерацию — только своим и только в личке.
+
+    Как админский блок выше: в группе упоминание панели выдало бы
+    её существование всему чату.
+    """
+    if message.chat.type != "private" or message.from_user is None:
+        return text
+    if not await is_mod(message.from_user.id):
+        return text
+    return f"{text}\n\n{MOD_HELP}"
+
+
 @help_router.message(F.text == "!помощь")
 async def help_cmd(message: Message):
-    await message.answer(await with_admin_block(HELP_TEXT, message), parse_mode="HTML")
+    text = await with_admin_block(HELP_TEXT, message)
+    await message.answer(await with_mod_block(text, message), parse_mode="HTML")

@@ -47,6 +47,15 @@ WATCHED = (
 )
 
 
+async def is_mod(tg_id: int) -> bool:
+    """Свой для теневой модерации: владелец или назначенный заместитель."""
+    if tg_id == owner_id():
+        return True
+    async with async_session_maker() as session:
+        deputy = await DeputyDAO(session).get()
+    return deputy is not None and deputy.tg_id == tg_id
+
+
 class ModAccess(BaseFilter):
     """Личка + владелец или заместитель. Чужим — молчание."""
 
@@ -55,11 +64,7 @@ class ModAccess(BaseFilter):
         chat = event.chat if isinstance(event, Message) else event.message.chat
         if chat.type != "private" or user is None:
             return False
-        if user.id == owner_id():
-            return True
-        async with async_session_maker() as session:
-            deputy = await DeputyDAO(session).get()
-        return deputy is not None and deputy.tg_id == user.id
+        return await is_mod(user.id)
 
 
 class Mod(StatesGroup):
