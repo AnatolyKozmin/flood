@@ -17,6 +17,7 @@ from handlers.command_quotes_top import quotes_top_router
 from handlers.command_battle import battle_router
 from handlers.command_duel import duel_router
 from handlers.command_karma import karma_router
+from handlers.command_mod import mod_router
 from handlers.command_admin import admin_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from middlewares.dead_mute import DeadMuteMiddleware
@@ -34,6 +35,7 @@ dp = Dispatcher()
 # FSM-хендлер должен ловить сообщения раньше остальных команд.
 dp.include_router(profile_router)
 dp.include_router(admin_router)
+dp.include_router(mod_router)
 dp.include_router(help_router)
 dp.include_router(people_router)
 dp.include_router(random_router)

@@ -23,6 +23,12 @@ class DuelDAO:
         )
         return (await self.session.execute(query)).scalars().first()
 
+    async def is_dead_anywhere(self, user_id: int) -> DeadSoul | None:
+        """Мёртв хоть в каком-то чате — для теневой модерации, где мут
+        глобальный и чат неизвестен."""
+        query = select(DeadSoul).where(DeadSoul.user_id == user_id)
+        return (await self.session.execute(query)).scalars().first()
+
     async def kill(
         self, chat_id: int, user_id: int, username: str, display: str,
         now: datetime | None = None, ttl: timedelta | None = None,

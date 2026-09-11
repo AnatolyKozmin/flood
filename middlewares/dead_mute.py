@@ -1,8 +1,12 @@
-"""Мёртвые молчат: трём все сообщения погибших в дуэли/рулетке.
+"""Мёртвые и замученные молчат: трём их сообщения.
 
 Висит outer-мидлварью раньше счётчика (см. main.py): сообщение мёртвого
 не должно ни попасть в !топ, ни сработать командой — оно просто исчезает.
 Поэтому цепочку дальше не зовём (return без handler).
+
+Два источника тишины: смерть в дуэли (час, с воскрешением) и теневой мут
+из !модерации (бессрочно, только там и видно). Проверка дешёвая —
+два точечных SELECT по первичным ключам на сообщение.
 
 Важно: удалять чужие сообщения бот может только админом чата с правом
 «удаление сообщений». Без прав удаление молча не срабатывает, а человек
@@ -14,6 +18,7 @@ from aiogram.types import Message
 
 from database.duel_dao import DuelDAO
 from database.engine import async_session_maker
+from database.mod_dao import MuteDAO
 
 
 class DeadMuteMiddleware(BaseMiddleware):
@@ -24,8 +29,12 @@ class DeadMuteMiddleware(BaseMiddleware):
             and not event.from_user.is_bot
         ):
             async with async_session_maker() as session:
-                dead = await DuelDAO(session).is_dead(event.chat.id, event.from_user.id)
-            if dead is not None:
+                silenced = (
+                    await DuelDAO(session).is_dead(event.chat.id, event.from_user.id)
+                    is not None
+                    or await MuteDAO(session).is_muted(event.from_user.id) is not None
+                )
+            if silenced:
                 try:
                     await event.delete()
                 except TelegramAPIError:
