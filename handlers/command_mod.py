@@ -167,6 +167,8 @@ async def _screen_text(is_owner: bool) -> tuple[str, InlineKeyboardMarkup]:
                 lines.append(f"• {who}")
             rows.append([_btn("👤 Заместитель", "deputy")])
 
+        rows.append([_btn("❌ Закрыть", "close")])
+
     return "\n".join(lines), _kb(*rows) if rows else None
 
 
@@ -190,6 +192,17 @@ async def mod_cmd(message: Message, state: FSMContext):
 async def cb_panel(call: CallbackQuery, state: FSMContext):
     await call.answer()
     await _show(call, state)
+
+
+@mod_router.callback_query(F.data == f"{CB}:close", ModAccess())
+async def cb_close(call: CallbackQuery, state: FSMContext):
+    """Выйти из модерации: закрыть панель, чтобы не висела в личке."""
+    await state.clear()
+    await call.answer()
+    try:
+        await call.message.delete()
+    except TelegramAPIError:
+        pass
 
 
 @mod_router.callback_query(F.data.startswith(f"{CB}:mute:"), ModAccess())
@@ -277,6 +290,7 @@ async def _deputy_screen(target: Message | CallbackQuery) -> None:
         kb = _kb(
             [_btn("➕ Добавить", "dep_add")],
             [_btn("↩️ В панель", "panel")],
+            [_btn("❌ Закрыть", "close")],
         )
     else:
         who = (f"@{html.escape(deputy.username.lstrip('@'))}"
@@ -289,6 +303,7 @@ async def _deputy_screen(target: Message | CallbackQuery) -> None:
         kb = _kb(
             [_btn("🗑 Удалить", "dep_del")],
             [_btn("↩️ В панель", "panel")],
+            [_btn("❌ Закрыть", "close")],
         )
     await _paint(target, text, kb)
 
