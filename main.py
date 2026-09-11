@@ -16,6 +16,7 @@ from handlers.command_all import all_router
 from handlers.command_quotes_top import quotes_top_router
 from handlers.command_battle import battle_router
 from handlers.command_duel import duel_router
+from handlers.command_karma import karma_router
 from handlers.command_admin import admin_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from middlewares.dead_mute import DeadMuteMiddleware
@@ -45,6 +46,7 @@ dp.include_router(tarot_router)
 dp.include_router(quotes_top_router)
 dp.include_router(battle_router)
 dp.include_router(duel_router)
+dp.include_router(karma_router)
 dp.include_router(top_router)
 dp.include_router(all_router)
 
