@@ -1,8 +1,9 @@
 import html
 import random
 from datetime import datetime
+from pathlib import Path
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 from aiogram.filters import Command
 from sqlalchemy import select
 
@@ -131,6 +132,30 @@ async def tagil_cmd(message: Message):
     async with async_session_maker() as session:
         tag = await _anatoly_tag(session)
     await message.answer(f"@{tag}, ПОШЛИ РАБОТАТЬ В ПОНЕДЕЛЬНИК! ТАГИИИИЛ!")
+
+
+_MAKAN_ASSETS = Path(__file__).resolve().parent.parent / "assets"
+_MAKAN_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+MAKAN_CAPTION = "Я говорю Macan, вы говорите ..."
+
+
+def _makan_photo() -> Path | None:
+    for ext in _MAKAN_EXTS:
+        candidate = _MAKAN_ASSETS / f"makan{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+@random_router.message(F.text.startswith('!макан'))
+async def makan_cmd(message: Message):
+    photo = _makan_photo()
+    if photo is None:
+        await message.reply("Фотка Макана потерялась — позовите Егора.")
+        return
+    await message.answer_photo(
+        FSInputFile(photo), caption=MAKAN_CAPTION
+    )
 
 
 
