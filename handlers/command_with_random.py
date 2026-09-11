@@ -1,5 +1,6 @@
 import html
 import random
+from datetime import datetime
 from aiogram import Router, F
 from aiogram.types import Message
 from aiogram.filters import Command
@@ -38,7 +39,8 @@ async def get_advice(message: Message):
 def _lived_days(birthday, today) -> int:
     """Сколько дней человек живёт. Дату рождения считаем московской,
     как и всё остальное в проекте."""
-    return max(0, (today - birthday.date()).days)
+    born = birthday.date() if isinstance(birthday, datetime) else birthday
+    return max(0, (today - born).days)
 
 
 @random_router.message(F.text.startswith('!жызуха'))
