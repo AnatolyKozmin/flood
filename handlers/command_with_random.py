@@ -1,9 +1,11 @@
 import html
+import io
 import random
 from datetime import datetime
 from pathlib import Path
+from PIL import Image
 from aiogram import Router, F
-from aiogram.types import FSInputFile, Message
+from aiogram.types import BufferedInputFile, FSInputFile, Message
 from aiogram.filters import Command
 from sqlalchemy import select
 
@@ -152,6 +154,16 @@ async def makan_cmd(message: Message):
     photo = _makan_photo()
     if photo is None:
         await message.reply("Фотка Макана потерялась — позовите Егора.")
+        return
+    if photo.suffix.casefold() == ".webp":
+        # sendPhoto не любит webp — отдаём JPEG из памяти.
+        buf = io.BytesIO()
+        Image.open(photo).convert("RGB").save(buf, format="JPEG", quality=90)
+        buf.seek(0)
+        await message.answer_photo(
+            BufferedInputFile(buf.read(), filename="macan.jpg"),
+            caption=MAKAN_CAPTION,
+        )
         return
     await message.answer_photo(
         FSInputFile(photo), caption=MAKAN_CAPTION
