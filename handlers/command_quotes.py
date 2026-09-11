@@ -71,6 +71,45 @@ def _display_author(user) -> str:
     return user.username or user.full_name or str(user.id)
 
 
+def _forwarded_author(replied: Message) -> tuple[str, str] | None:
+    """Автор пересланного сообщения: (tg_id, tg_username).
+
+    У пересланного сообщения from_user — это пересылальщик (человек №1),
+    а настоящий автор (человек №2) лежит в forward_origin (Bot API 7+)
+    или в legacy-полях forward_from / forward_sender_name / forward_from_chat.
+    Скрытого автора (без id) и канал возвращаем как есть: id пустой,
+    вместо тега — имя/название, аватарки тогда не будет.
+    """
+    origin = getattr(replied, "forward_origin", None)
+    if origin is not None:
+        otype = getattr(origin, "type", None)
+        if otype == "user":
+            user = getattr(origin, "sender_user", None)
+            if user is not None:
+                return str(user.id), _display_author(user)
+        elif otype == "hidden_user":
+            name = getattr(origin, "sender_user_name", None)
+            if name:
+                return "", name
+        elif otype in ("chat", "channel"):
+            chat = getattr(origin, "chat", None)
+            if chat is not None:
+                uname = getattr(chat, "username", None) or getattr(chat, "title", "") or ""
+                return str(getattr(chat, "id", "") or ""), uname
+
+    user = getattr(replied, "forward_from", None)
+    if user is not None:
+        return str(user.id), _display_author(user)
+    name = getattr(replied, "forward_sender_name", None)
+    if name:
+        return "", name
+    chat = getattr(replied, "forward_from_chat", None)
+    if chat is not None:
+        uname = getattr(chat, "username", None) or getattr(chat, "title", "") or ""
+        return str(getattr(chat, "id", "") or ""), uname
+    return None
+
+
 @quotes_router.message(FirstWord("!цитата"))
 async def save_quote(message: Message):
     if not message.reply_to_message:
@@ -84,12 +123,27 @@ async def save_quote(message: Message):
         return
 
     author = replied.from_user
-    if not author:
+    if not author and _forwarded_author(replied) is None:
         await message.reply("Не могу определить автора цитаты.")
         return
 
-    tg_id = str(author.id)
-    tg_username = _display_author(author)
+    forwarded = _forwarded_author(replied)
+    if forwarded is not None:
+        # Пересланное: цитата человека №2, а не пересылальщика.
+        tg_id, tg_username = forwarded
+    else:
+        tg_id = str(author.id)
+        tg_username = _display_author(author)
+
+    try:
+        avatar_uid = int(tg_id)
+    except (ValueError, TypeError):
+        avatar_uid = None
+
+    async def _avatar():
+        if avatar_uid is None:
+            return None
+        return await load_user_profile_avatar(message.bot, avatar_uid)
 
     async def _db_ops():
         async with async_session_maker() as session:
@@ -99,10 +153,7 @@ async def save_quote(message: Message):
             )
         return activist, quote
 
-    (activist, quote), avatar = await asyncio.gather(
-        _db_ops(),
-        load_user_profile_avatar(message.bot, author.id),
-    )
+    (activist, quote), avatar = await asyncio.gather(_db_ops(), _avatar())
 
     image_author = first_last(activist.fio) if activist else tg_username
     loop = asyncio.get_event_loop()
