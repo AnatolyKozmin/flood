@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.duel_models import DeadSoul, DuelStat, WhiteFlag
+from database.duel_models import DeadSoul, DuelStat, MathStat, WhiteFlag
 from utils.helpers import msk_now
 
 DEATH_TTL = timedelta(hours=1)
@@ -188,5 +188,62 @@ class DuelDAO:
         losers = sorted(
             (r for r in rows if r.duel_losses + r.roulette_losses > 0),
             key=lambda r: (-(r.duel_losses + r.roulette_losses), r.user_id),
+        )[:limit]
+        return winners, losers
+
+    # ── матдуэли ──
+
+    async def _math_row(
+        self, chat_id: int, user_id: int, username: str, display: str
+    ) -> MathStat:
+        row = (await self.session.execute(
+            select(MathStat).where(
+                MathStat.chat_id == chat_id, MathStat.user_id == user_id
+            )
+        )).scalars().first()
+        if row is None:
+            # Счётчики дублируем и в питоне: default=0 срабатывает только
+            # в базе, а прибавляем мы раньше flush.
+            row = MathStat(chat_id=chat_id, user_id=user_id, wins=0, losses=0)
+            self.session.add(row)
+        row.username = username or ""
+        row.display = display or ""
+        return row
+
+    async def record_math_win(
+        self,
+        chat_id: int,
+        winner: tuple[int, str, str],
+        loser: tuple[int, str, str],
+    ) -> None:
+        w = await self._math_row(chat_id, winner[0], winner[1], winner[2])
+        w.wins += 1
+        l = await self._math_row(chat_id, loser[0], loser[1], loser[2])
+        l.losses += 1
+        await self.session.commit()
+
+    async def record_math_timeout(
+        self, chat_id: int, first: tuple[int, str, str], second: tuple[int, str, str]
+    ) -> None:
+        """Никто не ответил — поражение обоим."""
+        for person in (first, second):
+            row = await self._math_row(chat_id, person[0], person[1], person[2])
+            row.losses += 1
+        await self.session.commit()
+
+    async def top_math(
+        self, chat_id: int, limit: int = 3
+    ) -> tuple[list[MathStat], list[MathStat]]:
+        """(топ победителей, топ проигравших) матдуэлей."""
+        rows = (await self.session.execute(
+            select(MathStat).where(MathStat.chat_id == chat_id)
+        )).scalars().all()
+        winners = sorted(
+            (r for r in rows if r.wins > 0),
+            key=lambda r: (-r.wins, r.user_id),
+        )[:limit]
+        losers = sorted(
+            (r for r in rows if r.losses > 0),
+            key=lambda r: (-r.losses, r.user_id),
         )[:limit]
         return winners, losers

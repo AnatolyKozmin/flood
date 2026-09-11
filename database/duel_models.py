@@ -55,7 +55,6 @@ class DuelStat(Base):
     победа — остался жив, поражение — умер. Прошлое не восстановить:
     мёртвые удаляются при воскрешении, так что счёт идёт с момента
     появления таблицы."""
-
     __tablename__ = "duel_stats"
     __table_args__ = (
         UniqueConstraint("chat_id", "user_id", name="uq_duel_stats_chat_user"),
@@ -70,3 +69,23 @@ class DuelStat(Base):
     duel_losses: Mapped[int] = mapped_column(Integer, default=0)
     roulette_wins: Mapped[int] = mapped_column(Integer, default=0)
     roulette_losses: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class MathStat(Base):
+    """Счёт матдуэлей: победа — первым дал правильный ответ, поражение —
+    проиграл или не ответил за 60 секунд (тогда поражение обоим).
+    Отдельная таблица, чтобы не смешивать с дуэлями на смерть:
+    create_all подхватывает её сам, миграций не надо."""
+
+    __tablename__ = "math_stats"
+    __table_args__ = (
+        UniqueConstraint("chat_id", "user_id", name="uq_math_stats_chat_user"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    username: Mapped[str] = mapped_column(String, default="")
+    display: Mapped[str] = mapped_column(String, default="")
+    wins: Mapped[int] = mapped_column(Integer, default=0)
+    losses: Mapped[int] = mapped_column(Integer, default=0)

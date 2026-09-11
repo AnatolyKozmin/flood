@@ -166,6 +166,13 @@ async def duel_cmd(message: Message):
         if await dao.get_flag(message.chat.id, target_id) is not None:
             await message.reply("Белый флаг даёт неприкосновенность")
             return
+        if await dao.get_flag(message.chat.id, me_id) is not None:
+            await message.reply(
+                "Ты под белым флагом — мирные не воюют. "
+                "Сначала <code>!опустить флаг</code>.",
+                parse_mode="HTML",
+            )
+            return
 
         # Победитель случаен: пасть может и вызвавший.
         if random.random() < 0.5:
@@ -400,6 +407,7 @@ async def _math_timeout(chat_id: int, bot) -> None:
         dao = DuelDAO(session)
         for person in (duel.challenger, duel.target):
             await dao.kill(chat_id, person[0], person[1], person[2], ttl=MATH_MUTE)
+        await dao.record_math_timeout(chat_id, duel.challenger, duel.target)
     try:
         await bot.send_message(
             chat_id,
@@ -438,6 +446,13 @@ async def mathduel_cmd(message: Message):
             return
         if await dao.get_flag(message.chat.id, target_id) is not None:
             await message.reply("Белый флаг даёт неприкосновенность")
+            return
+        if await dao.get_flag(message.chat.id, me_id) is not None:
+            await message.reply(
+                "Ты под белым флагом — мирные не воюют. "
+                "Сначала <code>!опустить флаг</code>.",
+                parse_mode="HTML",
+            )
             return
 
     a, b, c = (random.randint(100, 999) for _ in range(3))
@@ -478,10 +493,56 @@ async def mathduel_answer(message: Message):
         else (duel.target, duel.challenger)
     )
     async with async_session_maker() as session:
-        await DuelDAO(session).record_duel(message.chat.id, winner, loser)
+        dao = DuelDAO(session)
+        await dao.record_math_win(message.chat.id, winner, loser)
+        await dao.kill(
+            message.chat.id, loser[0], loser[1], loser[2], ttl=MATH_MUTE
+        )
 
     await message.answer(
         f"🏆 {_who(*winner)} первым ответил правильно: <b>{duel.answer}</b>!\n"
-        f"{_who(*loser)} повержен.",
+        f"{_who(*loser)} повержен и молчит 10 минут.",
         parse_mode="HTML",
     )
+
+
+@duel_router.message(FirstWord("!маттоп"))
+async def top_math_cmd(message: Message):
+    if not _is_group(message):
+        await message.reply(GROUP_ONLY)
+        return
+
+    async with async_session_maker() as session:
+        dao = DuelDAO(session)
+        winners, losers = await dao.top_math(message.chat.id)
+        if not winners and not losers:
+            await message.reply(
+                "Матдуэлей ещё не было — вызови кого-нибудь: "
+                "<code>!матдуэль</code> ответом на его сообщение.",
+                parse_mode="HTML",
+            )
+            return
+        lines = ["🔢 <b>Топ матдуэлей</b>", DIVIDER]
+        if winners:
+            lines.append("👑 <b>Чаще выигрывают:</b>")
+            for place, row in enumerate(winners, start=1):
+                name = await _plain_name(
+                    session, row.user_id, row.username, row.display
+                )
+                medal = MEDALS.get(place, f"{place}.")
+                lines.append(
+                    f"{medal} {name} — {row.wins} "
+                    f"{plural(row.wins, 'победа', 'победы', 'побед')}"
+                )
+        if losers:
+            lines.append("💀 <b>Чаще проигрывают:</b>")
+            for place, row in enumerate(losers, start=1):
+                name = await _plain_name(
+                    session, row.user_id, row.username, row.display
+                )
+                medal = MEDALS.get(place, f"{place}.")
+                lines.append(
+                    f"{medal} {name} — {row.losses} "
+                    f"{plural(row.losses, 'поражение', 'поражения', 'поражений')}"
+                )
+    await message.answer("\n".join(lines), parse_mode="HTML")
