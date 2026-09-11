@@ -138,7 +138,7 @@ async def tagil_cmd(message: Message):
 
 _MAKAN_ASSETS = Path(__file__).resolve().parent.parent / "assets"
 _MAKAN_EXTS = (".jpg", ".jpeg", ".png", ".webp")
-MAKAN_CAPTION = "Я говорю Macan, вы говорите ..."
+MAKAN_CAPTION = "брат бота или бот брата, брат"
 
 
 def _makan_photo() -> Path | None:
