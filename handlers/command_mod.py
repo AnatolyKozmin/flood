@@ -238,9 +238,10 @@ async def cb_unmute(call: CallbackQuery, state: FSMContext):
 
 class OwnerOnly(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
-        if event.chat.type != "private":
+        chat = event.chat if isinstance(event, Message) else event.message.chat
+        if chat.type != "private":
             return False
-        return event.from_user.id == owner_id()
+        return event.from_user is not None and event.from_user.id == owner_id()
 
 
 @mod_router.callback_query(F.data == f"{CB}:dep_add", OwnerOnly())
@@ -304,8 +305,19 @@ async def _resolve_person(bot: Bot, message: Message) -> tuple[int | None, str |
     if forwarded is not None:
         return forwarded.id, forwarded.username
 
+    # Новое API пересылок (aiogram 3.x): forward_from часто пуст из-за
+    # приватности, а данные лежат в forward_origin.
+    origin = getattr(message, "forward_origin", None)
+    if origin is not None:
+        sender = getattr(origin, "sender_user", None)
+        if sender is not None:
+            return sender.id, getattr(sender, "username", None)
+        # HiddenUser / Chat / Channel без user id — назначить некого.
+        if getattr(origin, "type", "") in ("hidden_user", "chat", "channel"):
+            return None, None
+
     if message.text:
-        text = message.text.strip()
+        text = message.text.strip().split()[0]
         if text.lstrip("-").isdigit():
             return int(text), None
         clean = text.lstrip("@").strip()
