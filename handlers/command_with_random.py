@@ -147,7 +147,7 @@ def _makan_photo() -> Path | None:
     return None
 
 
-@random_router.message(F.text.startswith('!макан'))
+@random_router.message(F.text.startswith('!ботбрат'))
 async def makan_cmd(message: Message):
     photo = _makan_photo()
     if photo is None:
