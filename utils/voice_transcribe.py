@@ -55,8 +55,24 @@ def _transcribe_sync(path: str) -> str:
     return "".join(s.text for s in segments).strip()
 
 
+def _strip_trailing_period(text: str) -> str:
+    """Снять точку в конце последнего предложения: в разговорной речи
+    её нет. «?» и «!» не трогаем — это интонация. Хитрость: если последнее
+    слово само с точками внутри («уч.-соц.ком.», «т.д.») — это сокращение,
+    точку оставляем, иначе «ком.» превратился бы в «ком»."""
+    s = text.rstrip()
+    if not s or s[-1] not in (".", "…"):
+        return s
+    head, _, last = s.rpartition(" ")
+    core = last.rstrip(".…")
+    if "." in core or "…" in core:
+        return s
+    return (head + " " + core if head else core).rstrip()
+
+
 async def transcribe(path: str) -> str:
     """Текст из аудиофайла. По одному за раз — иначе RAM скакнёт."""
     loop = asyncio.get_event_loop()
     async with _lock:
-        return await loop.run_in_executor(None, _transcribe_sync, path)
+        text = await loop.run_in_executor(None, _transcribe_sync, path)
+    return _strip_trailing_period(text)
