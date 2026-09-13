@@ -214,6 +214,9 @@ async def save_quote(message: Message):
         if error is not None or not text_body:
             await message.reply(error or "Ничего не расслышал.")
             return
+        # Метка прямо в тексте: цитата из расшифровки видна везде —
+        # в !мудрость, топе и батле, а не только в подписи под картинкой.
+        text_body = f"🎙 {text_body}"
         caption_html = f"🎙 <i>{label}, {duration} сек</i>"
 
     author = replied.from_user
@@ -270,7 +273,7 @@ async def save_voice_quote(message: Message):
         return
 
     await _build_and_send(
-        message, str(author.id), _display_author(author), text_body,
+        message, str(author.id), _display_author(author), f"🎙 {text_body}",
         f"🎙 <i>{label}, {duration} сек</i>",
     )
 
