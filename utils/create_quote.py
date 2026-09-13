@@ -18,6 +18,14 @@ _FOOTER_NAME_MAX_RIGHT = W - 200
 
 _WHITE = (255, 255, 255)
 
+# Метка расшифровки голосового: в шрифтах Cygre/DejaVu нет глифа эмодзи,
+# поэтому символ микрофона из текста вырезаем, а у подписи автора рисуем
+# микрофон графикой (см. _draw_mic_icon). Старые цитаты с «🎙 » в базе
+# тоже подхватываются — чинятся сами при следующей отрисовке.
+_VOICE_MARK = "🎙"
+_MIC_W = 30
+_MIC_GAP = 14
+
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 _TEMPLATE_PATH = _ASSETS_DIR / "quote_template.png"
 _CYGRE_FONT = _ASSETS_DIR / "Cygre-Medium.ttf"
@@ -174,6 +182,36 @@ def _wrap_to_width(
     return "\n".join(lines)
 
 
+def _split_voice_mark(inner: str) -> tuple[str, bool]:
+    """Вырезать ведущий 🎙 из текста. True — цитата из расшифровки ГС."""
+    s = inner.lstrip()
+    if s.startswith(_VOICE_MARK):
+        return s[1:].lstrip("️ \t"), True
+    return inner, False
+
+
+def _draw_mic_icon(
+    draw: ImageDraw.ImageDraw, x0: float, cy: float, h: int,
+    fill: tuple[int, int, int] = _WHITE,
+) -> None:
+    """Микрофон примитивами: капсюль-голова, U-держатель и стойка.
+    (x0, cy) — левый край и вертикальный центр иконки."""
+    w = max(10, int(h * 0.6))
+    cx = x0 + w / 2
+    y0 = cy - h / 2
+    lw = max(3, h // 8)
+    head_h = int(h * 0.52)
+    draw.rounded_rectangle([x0, y0, x0 + w, y0 + head_h], radius=w // 2, fill=fill)
+    r = w / 2 + 3
+    top = y0 + head_h * 0.45
+    bot = y0 + h * 0.80
+    draw.line([(cx - r, top), (cx - r, bot)], fill=fill, width=lw)
+    draw.line([(cx + r, top), (cx + r, bot)], fill=fill, width=lw)
+    draw.line([(cx - r, bot), (cx + r, bot)], fill=fill, width=lw)
+    draw.line([(cx, bot), (cx, y0 + h)], fill=fill, width=lw)
+    draw.line([(cx - r, y0 + h), (cx + r, y0 + h)], fill=fill, width=lw)
+
+
 def _paste_circular_avatar(
     base_rgba: Image.Image, avatar: Image.Image, cx: int, cy: int, d: int
 ) -> None:
@@ -256,6 +294,7 @@ def _compose_page_rgba(
     author_disp: str,
     avatar: Image.Image | None,
     body_font: ImageFont.ImageFont,
+    is_voice: bool = False,
 ) -> Image.Image:
     base = Image.open(_TEMPLATE_PATH).convert("RGBA")
     if avatar is not None:
@@ -266,7 +305,9 @@ def _compose_page_rgba(
 
     footer_font = _load_font(34)
     name_x = _AVATAR_CX + _AVATAR_DIAMETER // 2 + _AUTHOR_GAP_AFTER_AVATAR
-    name_max_w = max(120, _FOOTER_NAME_MAX_RIGHT - name_x)
+    name_max_w = max(
+        120, _FOOTER_NAME_MAX_RIGHT - name_x - (_MIC_W + _MIC_GAP if is_voice else 0)
+    )
     author_trunc = _truncate_footer_name(draw, author_disp or "кто‑то", footer_font, name_max_w)
 
     scratch_draw = ImageDraw.Draw(Image.new("RGBA", (W, H)))
@@ -308,6 +349,9 @@ def _compose_page_rgba(
         fill=_WHITE,
         anchor="lm",
     )
+    if is_voice:
+        mic_x = name_x + _text_width(draw, author_trunc, footer_font) + _MIC_GAP
+        _draw_mic_icon(draw, mic_x, _AVATAR_CY, 30)
 
     return base
 
@@ -343,6 +387,7 @@ def render_quote_pages(
 
     raw = text[:_MAX_CHARS] if len(text) > _MAX_CHARS else text
     inner = _normalize_inner(raw)
+    inner, is_voice = _split_voice_mark(inner)
     author_disp = (
         author_username.strip().removeprefix("@") if author_username else "аноним"
     )
@@ -394,6 +439,7 @@ def render_quote_pages(
             author_disp=author_disp,
             avatar=avatar,
             body_font=chosen_font,
+            is_voice=is_voice,
         )
         bufs.append(_rgba_to_png_buf(rgba))
     return bufs
