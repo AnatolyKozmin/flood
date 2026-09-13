@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 MAX_SEC = int(os.getenv("VOICE_QUOTE_MAX_SEC", "180"))
+# Подсказка декодеру: стиль и словарь чата. Коротко (до ~200 символов)
+# и только частое — длинный/специфичный промпт модель начинает
+# галлюцинировать (вставлять слова подсказки, которых не говорили).
+# Меняется без кода: WHISPER_PROMPT в .env / окружении.
+PROMPT = os.getenv(
+    "WHISPER_PROMPT",
+    "Разговорная русская речь, студенческий чат. Сокращения: ИК, ИТиАБД, "
+    "ВШУ, ФинФак, ЮрФак, МЭО, НАБ, СНиМК, ФЭБ, ПК, КВС, Уч.-соц.ком. "
+    "Мат и сленг дословно, без цензуры. Имена и фамилии.",
+)
 
 _lock = asyncio.Lock()
 _model = None
@@ -38,7 +48,10 @@ def _load_model():
 
 def _transcribe_sync(path: str) -> str:
     model = _load_model()
-    segments, _info = model.transcribe(path, beam_size=5, vad_filter=True)
+    segments, _info = model.transcribe(
+        path, language="ru", beam_size=5, vad_filter=True,
+        initial_prompt=PROMPT or None,
+    )
     return "".join(s.text for s in segments).strip()
 
 
