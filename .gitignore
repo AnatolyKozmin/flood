@@ -14,3 +14,5 @@ database/*.safe
 database/*.db-wal
 database/*.db-shm
 database/*.db-journal
+# Кэш модели whisper (качается один раз на сервере, ~150МБ).
+whisper-cache/

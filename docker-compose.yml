@@ -5,3 +5,4 @@ services:
     env_file: .env
     volumes:
       - ./database:/app/database
+      - ./whisper-cache:/app/whisper-cache

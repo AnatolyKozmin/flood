@@ -1,6 +1,9 @@
 import asyncio
+import logging
+import tempfile
+from pathlib import Path
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import BaseFilter
 from aiogram.types import BufferedInputFile, InputMediaPhoto, Message
 
@@ -11,6 +14,9 @@ from utils.create_quote import render_quote_pages
 from utils.helpers import first_last
 from handlers.command_quotes_top import vote_kb
 from utils.telegram_avatar import load_user_profile_avatar
+from utils import voice_transcribe
+
+logger = logging.getLogger(__name__)
 
 
 class FirstWord(BaseFilter):
@@ -110,31 +116,40 @@ def _forwarded_author(replied: Message) -> tuple[str, str] | None:
     return None
 
 
-@quotes_router.message(FirstWord("!цитата"))
-async def save_quote(message: Message):
-    if not message.reply_to_message:
-        await message.reply("Ответь этой командой на сообщение, которое нужно сохранить как цитату.")
-        return
+def _voice_source(msg: Message) -> tuple[str, int, str] | None:
+    """Файл голосового/кружка: (file_id, длительность, подпись).
+    Ничего голосового — None."""
+    if msg.voice is not None:
+        return msg.voice.file_id, msg.voice.duration or 0, "голосовое"
+    if msg.video_note is not None:
+        return msg.video_note.file_id, msg.video_note.duration or 0, "кружок"
+    return None
 
-    replied = message.reply_to_message
-    text_body = _quoted_text(replied)
-    if not text_body:
-        await message.reply("В этом сообщении нет текста (ни подписи). Ответь !цитата на сообщение с текстом.")
-        return
 
-    author = replied.from_user
-    if not author and _forwarded_author(replied) is None:
-        await message.reply("Не могу определить автора цитаты.")
-        return
+async def _transcribe_file_id(bot, file_id: str, label: str) -> tuple[str | None, str | None]:
+    """Скачать файл телеграма и распознать. Возвращает (текст, ошибка):
+    одно всегда None. Лимит длительности проверяют вызывающие до вызова."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
+    tmp.close()
+    try:
+        tg_file = await bot.get_file(file_id)
+        await bot.download_file(tg_file.file_path, Path(tmp.name))
+        text = await voice_transcribe.transcribe(tmp.name)
+    except Exception:
+        logger.exception("Транскрибация %s не удалась", label)
+        return None, "Не вышло распознать — попробуй ещё раз."
+    finally:
+        try:
+            Path(tmp.name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    if not text:
+        return None, "Ничего не расслышал — там точно есть речь?"
+    return text, None
 
-    forwarded = _forwarded_author(replied)
-    if forwarded is not None:
-        # Пересланное: цитата человека №2, а не пересылальщика.
-        tg_id, tg_username = forwarded
-    else:
-        tg_id = str(author.id)
-        tg_username = _display_author(author)
 
+async def _build_and_send(message: Message, tg_id: str, tg_username: str,
+                          text_body: str, caption_html: str | None = None) -> None:
     try:
         avatar_uid = int(tg_id)
     except (ValueError, TypeError):
@@ -160,7 +175,104 @@ async def save_quote(message: Message):
     pngs = await loop.run_in_executor(
         None, lambda: render_quote_pages(text_body, image_author, avatar=avatar)
     )
-    await _send_quote_pngs(message, pngs, quote_id=quote.id)
+    await _send_quote_pngs(message, pngs, caption_html=caption_html, quote_id=quote.id)
+
+
+@quotes_router.message(FirstWord("!цитата"))
+async def save_quote(message: Message):
+    if not message.reply_to_message:
+        await message.reply("Ответь этой командой на сообщение, которое нужно сохранить как цитату.")
+        return
+
+    replied = message.reply_to_message
+    text_body = _quoted_text(replied)
+    caption_html: str | None = None
+
+    if not text_body:
+        # Текста нет — может, это голосовое или кружок? Распознаём.
+        source = _voice_source(replied)
+        if source is None:
+            await message.reply("В этом сообщении нет текста (ни подписи). Ответь !цитата на сообщение с текстом.")
+            return
+        file_id, duration, label = source
+        if duration > voice_transcribe.MAX_SEC:
+            await message.reply(
+                f"{label.capitalize()} длинное ({duration} сек, "
+                f"максимум {voice_transcribe.MAX_SEC}) — "
+                "пришли кусок покороче."
+            )
+            return
+        status = await message.reply(f"🎙 Распознаю {label} ({duration} сек)…")
+        try:
+            text_body, error = await _transcribe_file_id(
+                message.bot, file_id, label)
+        finally:
+            try:
+                await status.delete()
+            except Exception:
+                pass
+        if error is not None or not text_body:
+            await message.reply(error or "Ничего не расслышал.")
+            return
+        caption_html = f"🎙 <i>{label}, {duration} сек</i>"
+
+    author = replied.from_user
+    if not author and _forwarded_author(replied) is None:
+        await message.reply("Не могу определить автора цитаты.")
+        return
+
+    forwarded = _forwarded_author(replied)
+    if forwarded is not None:
+        # Пересланное: цитата человека №2, а не пересылальщика.
+        tg_id, tg_username = forwarded
+    else:
+        tg_id = str(author.id)
+        tg_username = _display_author(author)
+
+    await _build_and_send(message, tg_id, tg_username, text_body, caption_html)
+
+
+@quotes_router.message(F.voice | F.video_note)
+async def save_voice_quote(message: Message):
+    """Голосовое или кружок с подписью «!цитата»: распознать и в цитату.
+    Чужие голосовые без подписи молча пропускаем."""
+    caption = (message.caption or "").strip()
+    if not caption or caption.split(maxsplit=1)[0].casefold() != "!цитата":
+        return
+
+    source = _voice_source(message)
+    if source is None:  # перестраховка, фильтр уже отобрал
+        return
+    file_id, duration, label = source
+    if duration > voice_transcribe.MAX_SEC:
+        await message.reply(
+            f"{label.capitalize()} длинное ({duration} сек, "
+            f"максимум {voice_transcribe.MAX_SEC}) — пришли кусок покороче."
+        )
+        return
+
+    author = message.from_user
+    if author is None:
+        await message.reply("Не могу определить автора цитаты.")
+        return
+
+    status = await message.reply(f"🎙 Распознаю {label} ({duration} сек)…")
+    try:
+        text_body, error = await _transcribe_file_id(
+            message.bot, file_id, label)
+    finally:
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    if error is not None or not text_body:
+        await message.reply(error or "Ничего не расслышал.")
+        return
+
+    await _build_and_send(
+        message, str(author.id), _display_author(author), text_body,
+        f"🎙 <i>{label}, {duration} сек</i>",
+    )
 
 
 @quotes_router.message(FirstWord("!мудрость"))
