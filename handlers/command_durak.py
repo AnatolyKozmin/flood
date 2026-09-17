@@ -8,7 +8,7 @@
 Стол один на всех: пока один не доиграл, второй ждёт (жмут кнопки только
 того, кто занял стол). Зависший стол (тишина дольше IDLE_TIMEOUT) отдаём
 новому игроку. Выбор колоды 24/36/52 перед партией. Итоги пишутся
-в durak_stats, топ — !покертоп.
+в durak_stats, топ — !топовый дурак.
 
 Сессии живут в памяти: рестарт бота партию обнуляет.
 """
@@ -35,6 +35,7 @@ CB = "dk"
 
 DECKS = (24, 36, 52)
 IDLE_TIMEOUT = 1800  # зависший стол отдаём через полчаса тишины
+THROTTLE_SEC = 1.0  # чаще — игнор: защита от пулемёта по кнопкам и двойных тапов
 
 CURRENT: D.Game | None = None
 OWNER: int | None = None
@@ -43,6 +44,7 @@ OWNER_DISPLAY: str = ""  # «Фамилия Имя» для шапки доск�
 LAST_ACTIVE = 0.0
 BOARDS: dict[int, tuple[int, int]] = {}  # tg_id -> (chat_id, msg_id) доски
 LAST_DECK: dict[int, int] = {}  # tg_id -> размер колоды для кнопки «Ещё»
+LAST_TAP: dict[int, float] = {}  # tg_id -> время последнего нажатия (троттлинг)
 _RECORDED: set[int] = set()  # id игр, уже записанных в топ
 
 
@@ -200,7 +202,8 @@ def _bot_toss_or_done(game: D.Game) -> str | None:
 
 
 async def _owned(call: CallbackQuery) -> D.Game | None:
-    """Партия звонящего: чужому — «стол занят», без партии — «начни с !дурак»."""
+    """Партия звонящего: чужому — «стол занят», без партии — «начни с !дурак».
+    Пулемёт по кнопкам режем молча: чаще THROTTLE_SEC — игнор."""
     global LAST_ACTIVE
     if CURRENT is None or CURRENT.over or OWNER != call.from_user.id:
         if CURRENT is not None and not CURRENT.over and OWNER is not None:
@@ -209,7 +212,12 @@ async def _owned(call: CallbackQuery) -> D.Game | None:
         else:
             await call.answer("Партии нет — начни с !дурак.", show_alert=True)
         return None
-    LAST_ACTIVE = time.monotonic()
+    now = time.monotonic()
+    if now - LAST_TAP.get(call.from_user.id, 0.0) < THROTTLE_SEC:
+        await call.answer()
+        return None
+    LAST_TAP[call.from_user.id] = now
+    LAST_ACTIVE = now
     return CURRENT
 
 
@@ -248,7 +256,7 @@ async def durak_cmd(message: Message):
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-@durak_router.message(Exact("!покертоп"))
+@durak_router.message(Exact("!топовый дурак"))
 async def pokertop_cmd(message: Message):
     async with async_session_maker() as session:
         top = await DurakDAO(session).top()
@@ -257,7 +265,7 @@ async def pokertop_cmd(message: Message):
             "Пока никто не доиграл ни одной партии. Начни с !дурак.")
         return
 
-    lines = ["🏆 <b>Покертоп</b> — победы над ботом в дурака", DIVIDER]
+    lines = ["🏆 <b>Топовый дурак</b> — победы над ботом в дурака", DIVIDER]
     for i, row in enumerate(top, 1):
         name = html.escape(row.display or "без имени")
         games = row.wins + row.losses + row.draws

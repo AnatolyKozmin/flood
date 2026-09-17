@@ -1,4 +1,4 @@
-"""Статистика дурака для !покертоп. Отдельный модуль, чужие таблицы не трогаем."""
+"""Статистика дурака для !топовый дурак. Отдельный модуль, чужие таблицы не трогаем."""
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, Integer, String

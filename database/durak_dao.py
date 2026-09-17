@@ -1,4 +1,4 @@
-"""Учёт партий дурака и топ для !покертоп."""
+"""Учёт партий дурака и топ для !топовый дурак."""
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
