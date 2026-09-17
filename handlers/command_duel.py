@@ -7,11 +7,14 @@
 
 !поднять флаг — защита от дуэлей на 3 дня, !опустить флаг — снять.
 !рулетка — шанс 1 к 6 умереть на час.
+!шальная — пуля наугад в случайного писавшего: шанс 1 к 2 попасть, флаг
+не спасает (это же рикошет, а не дуэль). В статистику дуэлей не пишем.
 """
 import asyncio
 import html
 import random
 from dataclasses import dataclass
+from time import monotonic
 
 from aiogram import Router
 from aiogram.filters import BaseFilter
@@ -21,6 +24,7 @@ from database.dao import ActivistsDAO
 from database.duel_dao import DuelDAO, FLAG_TTL
 from database.engine import async_session_maker
 from database.stats_dao import StatsDAO
+from middlewares.message_counter import flush_stats
 from datetime import timedelta
 from utils.format import DIVIDER
 from utils.helpers import first_last, msk_now
@@ -30,6 +34,7 @@ duel_router = Router()
 
 DUEL_CMD = "!дуэль"
 ROULETTE_CMD = "!рулетка"
+SHALNAYA_CMD = "!шальная"
 FLAG_UP_CMDS = ("!поднять флаг", "!подними флаг")
 FLAG_DOWN_CMDS = ("!опустить флаг", "!опусти флаг")
 PEACEFUL_CMD = "!мирные"
@@ -39,6 +44,11 @@ DUEL_TOP_WORDS = {"дуэлей", "дуэлянтов", "дуэли", "дуэл�
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 ROULETTE_DEATH_CHANCE = 1 / 6
+
+SHALNAYA_HIT_CHANCE = 1 / 2
+# Шальная — штука громкая, поэтому не чаще раза в полчаса на чат.
+SHALNAYA_COOLDOWN_SECONDS = 30 * 60
+_last_shalnaya: dict[int, float] = {}
 
 GROUP_ONLY = "Эта команда для группового чата — дуэли во флуде 🙂"
 
@@ -214,6 +224,61 @@ async def roulette_cmd(message: Message):
         await DuelDAO(session).record_roulette(message.chat.id, me, survived=True)
     await message.answer(
         f"{who} остался жив! Лучше не играй с такими вещами...",
+        parse_mode="HTML",
+    )
+
+
+@duel_router.message(FirstWord(SHALNAYA_CMD))
+async def shalnaya_cmd(message: Message):
+    if not _is_group(message):
+        await message.reply(GROUP_ONLY)
+        return
+
+    now = monotonic()
+    last = _last_shalnaya.get(message.chat.id)
+    if last is not None and now - last < SHALNAYA_COOLDOWN_SECONDS:
+        left = int(SHALNAYA_COOLDOWN_SECONDS - (now - last))
+        await message.reply(
+            f"Перезарядка, следующие {left // 60} мин {left % 60} сек "
+            f"ищем патроны"
+        )
+        return
+
+    await flush_stats()  # вдруг жертва написала первый раз только что
+    async with async_session_maker() as session:
+        dao = DuelDAO(session)
+        stats = StatsDAO(session)
+        board = await stats.leaderboard(message.chat.id)
+        users = await stats.users([uid for uid, _ in board]) if board else {}
+        alive = []
+        for uid, _ in board:
+            user = users.get(uid)
+            if user is None:
+                continue
+            if await dao.is_dead(message.chat.id, uid) is not None:
+                continue
+            alive.append((uid, user.username or "", user.full_name or ""))
+
+    if not alive:
+        await message.reply("Стрелять не в кого — все уже лежат.")
+        return
+
+    _last_shalnaya[message.chat.id] = now
+    shooter = _me(message.from_user)
+    victim = random.choice(alive)
+    if random.random() < SHALNAYA_HIT_CHANCE:
+        async with async_session_maker() as session:
+            await DuelDAO(session).kill(
+                message.chat.id, victim[0], victim[1], victim[2])
+        await message.answer(
+            f"🔫 {_who(*shooter)} жмёт на курок… "
+            f"Рикошетом был сражён {_who(*victim)}! "
+            f"Воскрешение через час.",
+            parse_mode="HTML",
+        )
+        return
+    await message.answer(
+        f"🔫 {_who(*shooter)} жмёт на курок… {_who(*victim)}, фух, повезло...",
         parse_mode="HTML",
     )
 
