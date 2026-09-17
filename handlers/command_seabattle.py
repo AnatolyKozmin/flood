@@ -200,7 +200,10 @@ async def _edit(bot, where: tuple[int, int] | None, text: str,
     if where is None:
         return
     try:
-        await bot.edit_message_text(text, where[0], where[1],
+        # Только именованные: в aiogram 3.27 вторым позиционным идёт
+        # business_connection_id и порядок легко перепутать (уже было).
+        await bot.edit_message_text(text, chat_id=where[0],
+                                    message_id=where[1],
                                     reply_markup=kb, parse_mode="HTML")
     except TelegramAPIError:
         logger.warning("Морбой: не правил сообщение %s", where, exc_info=True)
