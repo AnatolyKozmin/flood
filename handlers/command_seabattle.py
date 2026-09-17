@@ -47,6 +47,8 @@ class Seat:
     to_place: list[int] = field(default_factory=list)
     history: list[set[int]] = field(default_factory=list)  # встал — для отмены
     start: int | None = None  # выбранный нос при ручной расстановке
+    place_row: int | None = None  # выбранный ряд расстановки
+    shot_row: int | None = None  # выбранный ряд обстрела
     main_msg: tuple[int, int] | None = None  # (chat_id, msg_id) главного
     own_msg: tuple[int, int] | None = None  # (chat_id, msg_id) своего поля
     winner: int | None = None
@@ -112,8 +114,12 @@ def _main_text(seat: Seat) -> str:
         left = len(seat.to_place)
         body = _grid(seat.player, own=True)
         if seat.start is None:
-            tail = (f"\nСтавь {_ship_word(size)} (осталось кораблей: {left}): "
-                    f"выбери нос кнопками.")
+            if seat.place_row is None:
+                tail = (f"\nСтавь {_ship_word(size)} (осталось кораблей: {left}): "
+                        f"выбери ряд.")
+            else:
+                tail = (f"\nСтавь {_ship_word(size)} (осталось кораблей: {left}): "
+                        f"выбери нос в ряду {seat.place_row + 1}.")
         else:
             tail = (f"\nНос — <b>{S.cell_label(seat.start)}</b>, "
                     f"{_ship_word(size)}: выбери конец.")
@@ -123,7 +129,14 @@ def _main_text(seat: Seat) -> str:
         tail = ("\n🎉 <b>Ты потопил весь флот!</b>" if seat.winner == 0
                 else "\n🤖 <b>Бот потопил твой флот.</b>")
         return head + body + tail
+    if seat.shot_row is None:
+        return head + body + "\nТвой выстрел — выбери ряд."
     return head + body + "\nТвой выстрел — жми по клетке."
+
+
+def _rows_with(cells: set[int] | list[int]) -> list[int]:
+    """Ряды, где есть что выбирать, по порядку."""
+    return sorted({c // S.N for c in cells})
 
 
 def _main_kb(seat: Seat) -> InlineKeyboardMarkup | None:
@@ -136,23 +149,33 @@ def _main_kb(seat: Seat) -> InlineKeyboardMarkup | None:
             rows.append([_btn("↩️ Назад", "back")])
             return _kb(*rows)
         size = seat.to_place[0]
-        starts = S.valid_starts(seat.player, size)
-        rows = []
-        for i in range(0, len(starts), 5):
-            rows.append([_btn(S.cell_label(c), f"cell:{c}")
-                         for c in starts[i:i + 5]])
-        extra = []
-        if seat.history:
-            extra.append(_btn("↩️ Отменить последний", "undo"))
-        if len(starts) < 98:
+        starts = set(S.valid_starts(seat.player, size))
+        if seat.place_row is None:
+            rows = [[_btn(f"Ряд {r + 1}", f"prow:{r}")
+                     for r in _rows_with(starts)[i:i + 5]]
+                    for i in range(0, len(_rows_with(starts)), 5)]
+            extra = []
+            if seat.history:
+                extra.append(_btn("↩️ Отменить последний", "undo"))
             extra.append(_btn("🔀 Авто: доставить остальные", "auto"))
-        if extra:
             rows.append(extra)
+            return _kb(*rows) if rows else None
+        in_row = sorted(c for c in starts if c // S.N == seat.place_row)
+        rows = [[_btn(S.cell_label(c), f"cell:{c}") for c in in_row[i:i + 5]]
+                for i in range(0, len(in_row), 5)]
+        rows.append([_btn("↩️ Ряды", "rows")])
         return _kb(*rows) if rows else None
-    rows = []
-    free = [c for c in range(S.N * S.N) if c not in seat.enemy.shots]
-    for i in range(0, len(free), 5):
-        rows.append([_btn(S.cell_label(c), f"shot:{c}") for c in free[i:i + 5]])
+    if seat.shot_row is None:
+        unknown = [c for c in range(S.N * S.N) if c not in seat.enemy.shots]
+        rows = [[_btn(f"Ряд {r + 1}", f"brow:{r}")
+                 for r in _rows_with(unknown)[i:i + 5]]
+                for i in range(0, len(_rows_with(unknown)), 5)]
+        return _kb(*rows) if rows else None
+    in_row = [c for c in range(seat.shot_row * S.N, (seat.shot_row + 1) * S.N)
+              if c not in seat.enemy.shots]
+    rows = [[_btn(S.cell_label(c), f"shot:{c}") for c in in_row[i:i + 5]]
+            for i in range(0, len(in_row), 5)]
+    rows.append([_btn("↩️ Ряды", "brows")])
     return _kb(*rows) if rows else None
 
 
@@ -374,6 +397,7 @@ async def cb_cell(call: CallbackQuery):
         S.place(seat.player, {start})
         seat.history.append({start})
         seat.to_place.pop(0)
+        seat.place_row = None
         await call.answer(f"{S.cell_label(start)} — встал.")
         if not seat.to_place:
             _begin_battle(seat)
@@ -419,6 +443,7 @@ async def cb_end(call: CallbackQuery):
     seat.history.append(set(cells))
     seat.to_place.pop(0)
     seat.start = None
+    seat.place_row = None
     await call.answer("Встал.")
     if not seat.to_place:
         _begin_battle(seat)
@@ -450,6 +475,7 @@ async def cb_undo(call: CallbackQuery):
     cells = seat.history.pop()
     seat.player.ships = [s for s in seat.player.ships if s != cells]
     seat.to_place.insert(0, len(cells))
+    seat.place_row = None
     await call.answer("Убрал последний.")
     await _paint(seat, call.bot)
 
@@ -482,6 +508,70 @@ async def cb_auto(call: CallbackQuery):
     await _paint(seat, call.bot)
 
 
+@seabattle_router.callback_query(F.data.startswith(f"{CB}:prow:"))
+async def cb_prow(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None or seat.phase != "placing" or seat.start is not None:
+        await call.answer()
+        return
+    try:
+        row = int(call.data.split(":")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    size = seat.to_place[0]
+    if row not in _rows_with(set(S.valid_starts(seat.player, size))):
+        await call.answer("В этом ряду уже не встанет.", show_alert=True)
+        await _paint(seat, call.bot)
+        return
+    seat.place_row = row
+    await call.answer()
+    await _paint(seat, call.bot)
+
+
+@seabattle_router.callback_query(F.data == f"{CB}:rows")
+async def cb_rows(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None or seat.phase != "placing":
+        await call.answer()
+        return
+    seat.place_row = None
+    await call.answer()
+    await _paint(seat, call.bot)
+
+
+@seabattle_router.callback_query(F.data.startswith(f"{CB}:brow:"))
+async def cb_brow(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None or seat.phase != "battle":
+        await call.answer()
+        return
+    try:
+        row = int(call.data.split(":")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    unknown = [c for c in range(S.N * S.N) if c not in seat.enemy.shots]
+    if row not in _rows_with(unknown):
+        await call.answer("Ряд уже прострелян.", show_alert=True)
+        await _paint(seat, call.bot)
+        return
+    seat.shot_row = row
+    await call.answer()
+    await _paint(seat, call.bot)
+
+
+@seabattle_router.callback_query(F.data == f"{CB}:brows")
+async def cb_brows(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None or seat.phase != "battle":
+        await call.answer()
+        return
+    seat.shot_row = None
+    await call.answer()
+    await _paint(seat, call.bot)
+
+
 @seabattle_router.callback_query(F.data.startswith(f"{CB}:shot:"))
 async def cb_shot(call: CallbackQuery):
     seat = await _owned(call)
@@ -499,6 +589,7 @@ async def cb_shot(call: CallbackQuery):
     result, _ = S.shoot(seat.enemy, cell)
     if S.all_sunk(seat.enemy):
         seat.phase, seat.winner = "over", 0
+        seat.shot_row = None
         await call.answer("🎉 Победа!")
         _release(seat)
         await _paint(seat, call.bot)
@@ -510,10 +601,15 @@ async def cb_shot(call: CallbackQuery):
     seat.hunter.report(bot_cell, bot_result, bot_sunk)
     if S.all_sunk(seat.player):
         seat.phase, seat.winner = "over", 1
+        seat.shot_row = None
         await call.answer("🤖 Бот потопил твой флот.")
         _release(seat)
         await _paint(seat, call.bot)
         return
+    if seat.shot_row is not None and not any(
+            c not in seat.enemy.shots
+            for c in range(seat.shot_row * S.N, (seat.shot_row + 1) * S.N)):
+        seat.shot_row = None  # ряд прострелян — вернуться к выбору рядов
     await call.answer({"miss": "Мимо.", "hit": "Попал!",
                        "sunk": "Потопил!"}[result])
     await _paint(seat, call.bot)
