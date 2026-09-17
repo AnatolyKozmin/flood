@@ -56,6 +56,7 @@ class Seat:
 PRIVATE_SEATS: dict[int, Seat] = {}
 GROUP_SEAT: Seat | None = None
 LAST_TAP: dict[int, float] = {}
+CHOICE: dict[int, tuple[int, int]] = {}  # tg_id -> (chat, msg) выбора режима
 
 
 class Exact(BaseFilter):
@@ -179,7 +180,7 @@ async def _edit(bot, where: tuple[int, int] | None, text: str,
         await bot.edit_message_text(text, where[0], where[1],
                                     reply_markup=kb, parse_mode="HTML")
     except TelegramAPIError:
-        pass
+        logger.warning("Морбой: не правил сообщение %s", where, exc_info=True)
 
 
 async def _paint(seat: Seat, bot) -> None:
@@ -292,19 +293,32 @@ async def seabattle_cmd(message: Message):
         if uid not in PRIVATE_SEATS and len(PRIVATE_SEATS) >= MAX_PRIVATE:
             await message.answer("Все столы заняты — подожди, кто-нибудь доиграет.")
             return
-    await message.answer(
+    # Старый выбор режима затираем, иначе висят мёртвые «Сам/Авто».
+    old_choice = CHOICE.pop(uid, None)
+    if old_choice is not None:
+        try:
+            await message.bot.delete_message(old_choice[0], old_choice[1])
+        except TelegramAPIError:
+            pass
+    sent = await message.answer(
         "⚓ <b>Морской бой</b> — как расставляем корабли?",
         reply_markup=_kb([_btn("🚢 Сам", "mode:manual"),
                           _btn("🔀 Авто", "mode:auto")]),
         parse_mode="HTML",
     )
+    CHOICE[uid] = (sent.chat.id, sent.message_id)
 
 
 @seabattle_router.callback_query(F.data.startswith(f"{CB}:mode:"))
 async def cb_mode(call: CallbackQuery):
+    uid = call.from_user.id
+    now = time.monotonic()
+    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+        await call.answer()  # двойной тап по «Сам/Авто» — игнор
+        return
+    LAST_TAP[uid] = now
     auto = call.data.split(":")[-1] == "auto"
     group = _is_group_chat(call.message.chat)
-    uid = call.from_user.id
     if group:
         busy = _group_busy_for(uid)
         if busy:
@@ -323,6 +337,8 @@ async def cb_mode(call: CallbackQuery):
         if old is not None:
             await _drop_messages(call.bot, old)
     seat = await _new_seat(call.from_user, group, auto)
+    # Выбор стал доской — из списка на удаление убираем.
+    CHOICE.pop(call.from_user.id, None)
     seat.main_msg = (call.message.chat.id, call.message.message_id)
     own = await call.message.answer(
         _own_text(seat), reply_markup=_own_kb(seat), parse_mode="HTML")
