@@ -260,8 +260,6 @@ async def pokertop_cmd(message: Message):
     lines = ["🏆 <b>Покертоп</b> — победы над ботом в дурака", DIVIDER]
     for i, row in enumerate(top, 1):
         name = html.escape(row.display or "без имени")
-        if row.username:
-            name += f" (@{html.escape(row.username.lstrip('@'))})"
         games = row.wins + row.losses + row.draws
         lines.append(
             f"{i}. {name} — {row.wins} поб. · {row.losses} пораж. · "
