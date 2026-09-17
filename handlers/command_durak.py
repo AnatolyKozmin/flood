@@ -1,13 +1,14 @@
-"""Подкидной дурак с ботом — пока только в личке.
+"""Подкидной дурак с ботом — в личке и во флуде.
 
 Человек (игрок 0) против бота (игрок 1). Свои карты — кнопками, чужие не
 видны. Ход игры пошаговый: после каждого действия человека бот мгновенно
 отвечает (бьёт, подкидывает или ведёт новый заход), так что отдельного
 состояния «ход бота» нет — доска всегда ждёт решения человека или финал.
 
-Стол один на всех: пока один не доиграл, второй ждёт. Зависший стол
-(тишина дольше IDLE_TIMEOUT) отдаём новому игроку. Выбор колоды 24/36/52
-перед партией. Итоги пишутся в durak_stats, топ — !покертоп.
+Стол один на всех: пока один не доиграл, второй ждёт (жмут кнопки только
+того, кто занял стол). Зависший стол (тишина дольше IDLE_TIMEOUT) отдаём
+новому игроку. Выбор колоды 24/36/52 перед партией. Итоги пишутся
+в durak_stats, топ — !покертоп.
 
 Сессии живут в памяти: рестарт бота партию обнуляет.
 """
@@ -39,7 +40,7 @@ CURRENT: D.Game | None = None
 OWNER: int | None = None
 OWNER_NAME: str = ""
 LAST_ACTIVE = 0.0
-BOARDS: dict[int, int] = {}  # tg_id -> message_id доски (старую трём)
+BOARDS: dict[int, tuple[int, int]] = {}  # tg_id -> (chat_id, msg_id) доски
 LAST_DECK: dict[int, int] = {}  # tg_id -> размер колоды для кнопки «Ещё»
 _RECORDED: set[int] = set()  # id игр, уже записанных в топ
 
@@ -76,6 +77,7 @@ def _board_text(game: D.Game) -> str:
     lines = [
         f"🃏 <b>Дурак-{game.deck_size}</b> · козырь {D.SUIT_EMOJI[game.trump]} "
         f"· колода: {len(game.talon)}",
+        f"Играет: {html.escape(OWNER_NAME)} · "
         f"Бот: {len(game.hands[1])} карт · Ты: {len(game.hands[0])} карт.",
     ]
     if game.table:
@@ -225,7 +227,7 @@ async def _finish_if_over(game: D.Game, user: Message | CallbackQuery) -> bool:
     return True
 
 
-@durak_router.message(F.chat.type == "private", Exact("!дурак"))
+@durak_router.message(Exact("!дурак"))
 async def durak_cmd(message: Message):
     busy = _table_busy_for(message.from_user.id)
     if busy:
@@ -236,18 +238,13 @@ async def durak_cmd(message: Message):
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-@durak_router.message(F.chat.type.in_({"group", "supergroup"}), Exact("!дурак"))
-async def durak_group_hint(message: Message):
-    await message.reply("В дурака играем в личке: напиши мне !дурак.")
-
-
 @durak_router.message(Exact("!покертоп"))
 async def pokertop_cmd(message: Message):
     async with async_session_maker() as session:
         top = await DurakDAO(session).top()
     if not top:
         await message.answer(
-            "Пока никто не доиграл ни одной партии. Начни с !дурак в личке.")
+            "Пока никто не доиграл ни одной партии. Начни с !дурак.")
         return
 
     lines = ["🏆 <b>Покертоп</b> — победы над ботом в дурака", DIVIDER]
@@ -277,21 +274,25 @@ async def cb_deck(call: CallbackQuery):
         await call.answer(f"Стол занят — играет {busy}.", show_alert=True)
         return
     took_over = OWNER is not None and OWNER != call.from_user.id
-    old_id = BOARDS.get(call.from_user.id)
-    if old_id is not None and old_id != call.message.message_id:
+    old = BOARDS.get(call.from_user.id)
+    if old is not None and (old[0], old[1]) != (
+            call.message.chat.id, call.message.message_id):
         try:
-            await call.bot.delete_message(call.message.chat.id, old_id)
+            await call.bot.delete_message(old[0], old[1])
         except TelegramAPIError:
             pass
     game = _start_game(call.from_user.id,
                        call.from_user.full_name, deck_size)
-    BOARDS[call.from_user.id] = call.message.message_id
+    BOARDS[call.from_user.id] = (call.message.chat.id,
+                                 call.message.message_id)
     first = ("Первым ходишь ты (младший козырь у тебя)."
              if game.attacker == 0 else "Первым ходит бот.")
     await call.answer()
     if took_over:
         await call.message.answer("Прошлый стол завис — забираю его себе.")
-    await call.message.answer(f"Новая партия на {game.deck_size}! {first}")
+    await call.message.answer(
+        f"{call.from_user.full_name}, новая партия на {game.deck_size}! "
+        f"{first}")
     await _paint_board(call, game)
 
 
@@ -313,7 +314,8 @@ async def cb_new(call: CallbackQuery):
         return
     await call.answer()
     _start_game(call.from_user.id, call.from_user.full_name, deck_size)
-    BOARDS[call.from_user.id] = call.message.message_id
+    BOARDS[call.from_user.id] = (call.message.chat.id,
+                                 call.message.message_id)
     await _paint_board(call, CURRENT)
 
 
