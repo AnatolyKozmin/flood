@@ -39,6 +39,7 @@ IDLE_TIMEOUT = 1800  # зависший стол отдаём через пол�
 CURRENT: D.Game | None = None
 OWNER: int | None = None
 OWNER_NAME: str = ""
+OWNER_DISPLAY: str = ""  # «Фамилия Имя» для шапки доски
 LAST_ACTIVE = 0.0
 BOARDS: dict[int, tuple[int, int]] = {}  # tg_id -> (chat_id, msg_id) доски
 LAST_DECK: dict[int, int] = {}  # tg_id -> размер колоды для кнопки «Ещё»
@@ -75,10 +76,12 @@ def _deck_text() -> tuple[str, InlineKeyboardMarkup]:
 
 def _board_text(game: D.Game) -> str:
     lines = [
-        f"🃏 <b>Дурак-{game.deck_size}</b> · козырь {D.SUIT_EMOJI[game.trump]} "
-        f"· колода: {len(game.talon)}",
-        f"Играет: {html.escape(OWNER_NAME)} · "
-        f"Бот: {len(game.hands[1])} карт · Ты: {len(game.hands[0])} карт.",
+        f"🃏 <b>ИГРА ДУРАК-{game.deck_size}</b>",
+        f"Игрок: {html.escape(OWNER_DISPLAY or OWNER_NAME)}",
+        f"Козырь: {D.SUIT_EMOJI[game.trump]}",
+        f"Колода: {len(game.talon)}",
+        f"Бот: {len(game.hands[1])} карт",
+        f"Ты: {len(game.hands[0])} карт.",
     ]
     if game.table:
         lines.append("")
@@ -144,13 +147,20 @@ def _table_busy_for(user_id: int) -> str | None:
     return OWNER_NAME
 
 
-def _start_game(user_id: int, user_name: str, deck_size: int) -> D.Game:
+def _player_display(user) -> str:
+    """«Фамилия Имя» для шапки доски."""
+    fio = f"{user.last_name or ''} {user.first_name or ''}".strip()
+    return fio or user.full_name
+
+
+def _start_game(user_id: int, user, deck_size: int) -> D.Game:
     """Занять стол и раздать. Вызывать после проверки _table_busy_for."""
-    global CURRENT, OWNER, OWNER_NAME, LAST_ACTIVE
+    global CURRENT, OWNER, OWNER_NAME, OWNER_DISPLAY, LAST_ACTIVE
     game = D.new_game(deck_size=deck_size)
     CURRENT = game
     OWNER = user_id
-    OWNER_NAME = user_name
+    OWNER_NAME = user.full_name
+    OWNER_DISPLAY = _player_display(user)
     LAST_ACTIVE = time.monotonic()
     LAST_DECK[user_id] = game.deck_size
     logger.info("Дурак-%s: партия для %s, первый ходит %s",
@@ -282,7 +292,7 @@ async def cb_deck(call: CallbackQuery):
         except TelegramAPIError:
             pass
     game = _start_game(call.from_user.id,
-                       call.from_user.full_name, deck_size)
+                       call.from_user, deck_size)
     BOARDS[call.from_user.id] = (call.message.chat.id,
                                  call.message.message_id)
     first = ("Первым ходишь ты (младший козырь у тебя)."
@@ -313,7 +323,7 @@ async def cb_new(call: CallbackQuery):
             pass
         return
     await call.answer()
-    _start_game(call.from_user.id, call.from_user.full_name, deck_size)
+    _start_game(call.from_user.id, call.from_user, deck_size)
     BOARDS[call.from_user.id] = (call.message.chat.id,
                                  call.message.message_id)
     await _paint_board(call, CURRENT)

@@ -18,6 +18,11 @@ from utils import voice_transcribe
 
 logger = logging.getLogger(__name__)
 
+VOICE_DISABLED_TEXT = (
+    "В данный момент сервер загружен брифами к ЦТ, во избежании перегруза, "
+    "расшифровка гс временно отключена. Проще говоря - хуярьте текстом"
+)
+
 
 class FirstWord(BaseFilter):
     def __init__(self, cmd: str) -> None:
@@ -194,6 +199,9 @@ async def save_quote(message: Message):
         if source is None:
             await message.reply("В этом сообщении нет текста (ни подписи). Ответь !цитата на сообщение с текстом.")
             return
+        if not voice_transcribe.ENABLED:
+            await message.reply(VOICE_DISABLED_TEXT)
+            return
         file_id, duration, label = source
         if duration > voice_transcribe.MAX_SEC:
             await message.reply(
@@ -241,6 +249,9 @@ async def save_voice_quote(message: Message):
     Чужие голосовые без подписи молча пропускаем."""
     caption = (message.caption or "").strip()
     if not caption or caption.split(maxsplit=1)[0].casefold() != "!цитата":
+        return
+    if not voice_transcribe.ENABLED:
+        await message.reply(VOICE_DISABLED_TEXT)
         return
 
     source = _voice_source(message)
