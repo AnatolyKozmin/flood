@@ -18,25 +18,34 @@ RANKS = (6, 7, 8, 9, 10, 11, 12, 13, 14)
 SUITS = (0, 1, 2, 3)
 SUIT_EMOJI = ("♠️", "♥️", "♦️", "♣️")
 RANK_LABEL = {
+    2: "2", 3: "3", 4: "4", 5: "5",
     6: "6", 7: "7", 8: "8", 9: "9", 10: "10",
     11: "В", 12: "Д", 13: "К", 14: "А",
 }
+# Выбор колоды перед партией: id карты — suit*13 + (rank-2), единое
+# пространство 0..51, колода — подмножество по рангам.
+DECK_RANKS = {
+    24: (9, 10, 11, 12, 13, 14),
+    36: (6, 7, 8, 9, 10, 11, 12, 13, 14),
+    52: (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14),
+}
+HAND_SIZE = 6
 
 
 def suit_of(card: int) -> int:
-    return card // 9
+    return card // 13
 
 
 def rank_of(card: int) -> int:
-    return card % 9 + 6
+    return card % 13 + 2
 
 
 def card_label(card: int) -> str:
     return f"{RANK_LABEL[rank_of(card)]}{SUIT_EMOJI[suit_of(card)]}"
 
 
-def full_deck() -> list[int]:
-    return [s * 9 + r for s in SUITS for r in range(9)]
+def full_deck(ranks: tuple[int, ...] = RANKS) -> list[int]:
+    return [s * 13 + (r - 2) for s in SUITS for r in ranks]
 
 
 def beats(att: int, dfn: int, trump: int) -> bool:
@@ -55,6 +64,7 @@ class Game:
     attacker: int = 0
     bout_def_count: int = 6  # карт у защитника на начало захода (лимит)
     beaten: int = 0  # побитые карты в отбое (из игры, для инварианта колоды)
+    deck_size: int = 36  # 24/36/52 — для шапки доски
     over: bool = False
     winner: int | None = None  # 0/1, None — ничья
 
@@ -76,9 +86,11 @@ def first_attacker(game: Game) -> int:
     return best[1] if best is not None else 0
 
 
-def new_game(seed: int | None = None) -> Game:
+def new_game(seed: int | None = None, deck_size: int = 36) -> Game:
+    size = deck_size if deck_size in DECK_RANKS else 36
+    ranks = DECK_RANKS[size]
     rng = random.Random(seed)
-    deck = full_deck()
+    deck = full_deck(ranks)
     rng.shuffle(deck)
     game = Game(
         talon=deck[12:],
@@ -86,6 +98,7 @@ def new_game(seed: int | None = None) -> Game:
         hands=[sorted(deck[0:6]), sorted(deck[6:12])],
         table=[],
         attacker=0,
+        deck_size=size,
     )
     game.attacker = first_attacker(game)
     game.bout_def_count = len(game.hands[1 - game.attacker])
@@ -208,7 +221,7 @@ def resolve_done(game: Game) -> str | None:
 
 
 def card_count(game: Game) -> int:
-    """Инвариант колоды: руки + стол + прикуп + отбой всегда 36."""
+    """Карты в игре: руки + стол + прикуп + отбой (24/36/52 по колоде)."""
     total = len(game.talon) + game.beaten + sum(len(h) for h in game.hands)
     for att, dfn in game.table:
         total += 1 + (1 if dfn is not None else 0)

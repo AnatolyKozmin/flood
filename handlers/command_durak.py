@@ -5,10 +5,15 @@
 отвечает (бьёт, подкидывает или ведёт новый заход), так что отдельного
 состояния «ход бота» нет — доска всегда ждёт решения человека или финал.
 
-Сессии живут в памяти (SESSIONS по telegram id): рестарт бота партию
-обнуляет — для v1 приемлемо, новая начинается по !дурак.
+Стол один на всех: пока один не доиграл, второй ждёт. Зависший стол
+(тишина дольше IDLE_TIMEOUT) отдаём новому игроку. Выбор колоды 24/36/52
+перед партией. Итоги пишутся в durak_stats, топ — !покертоп.
+
+Сессии живут в памяти: рестарт бота партию обнуляет.
 """
+import html
 import logging
+import time
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError
@@ -17,15 +22,26 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
+from database.durak_dao import DurakDAO
+from database.engine import async_session_maker
 from utils import durak as D
+from utils.format import DIVIDER
 
 logger = logging.getLogger(__name__)
 
 durak_router = Router()
 CB = "dk"
 
-SESSIONS: dict[int, D.Game] = {}
-BOARDS: dict[int, int] = {}  # tg_id -> message_id текущей доски (старую трём)
+DECKS = (24, 36, 52)
+IDLE_TIMEOUT = 1800  # зависший стол отдаём через полчаса тишины
+
+CURRENT: D.Game | None = None
+OWNER: int | None = None
+OWNER_NAME: str = ""
+LAST_ACTIVE = 0.0
+BOARDS: dict[int, int] = {}  # tg_id -> message_id доски (старую трём)
+LAST_DECK: dict[int, int] = {}  # tg_id -> размер колоды для кнопки «Ещё»
+_RECORDED: set[int] = set()  # id игр, уже записанных в топ
 
 
 class Exact(BaseFilter):
@@ -50,9 +66,15 @@ def _sorted_hand(game: D.Game, player: int) -> list[int]:
     return sorted(game.hands[player], key=lambda c: (D.suit_of(c), D.rank_of(c)))
 
 
+def _deck_text() -> tuple[str, InlineKeyboardMarkup]:
+    text = "🃏 <b>Дурак</b>\n" + DIVIDER + "\nСколько карт в колоде?"
+    kb = _kb([_btn(str(n), f"deck:{n}") for n in DECKS])
+    return text, kb
+
+
 def _board_text(game: D.Game) -> str:
     lines = [
-        f"🃏 <b>Дурак</b> · козырь {D.SUIT_EMOJI[game.trump]} "
+        f"🃏 <b>Дурак-{game.deck_size}</b> · козырь {D.SUIT_EMOJI[game.trump]} "
         f"· колода: {len(game.talon)}",
         f"Бот: {len(game.hands[1])} карт · Ты: {len(game.hands[0])} карт.",
     ]
@@ -111,11 +133,27 @@ async def _paint_board(target: Message | CallbackQuery, game: D.Game) -> None:
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-def _new_session(user_id: int) -> D.Game:
-    game = D.new_game()
-    SESSIONS[user_id] = game
-    logger.info("Дурак: новая партия для %s, первый ходит %s",
-                user_id, "человек" if game.attacker == 0 else "бот")
+def _table_busy_for(user_id: int) -> str | None:
+    """Имя занявшего стол — или None, если садиться можно."""
+    if CURRENT is None or CURRENT.over or OWNER is None or OWNER == user_id:
+        return None
+    if time.monotonic() - LAST_ACTIVE > IDLE_TIMEOUT:
+        return None
+    return OWNER_NAME
+
+
+def _start_game(user_id: int, user_name: str, deck_size: int) -> D.Game:
+    """Занять стол и раздать. Вызывать после проверки _table_busy_for."""
+    global CURRENT, OWNER, OWNER_NAME, LAST_ACTIVE
+    game = D.new_game(deck_size=deck_size)
+    CURRENT = game
+    OWNER = user_id
+    OWNER_NAME = user_name
+    LAST_ACTIVE = time.monotonic()
+    LAST_DECK[user_id] = game.deck_size
+    logger.info("Дурак-%s: партия для %s, первый ходит %s",
+                game.deck_size, user_id,
+                "человек" if game.attacker == 0 else "бот")
     if game.attacker == 1:
         _bot_lead(game)
     return game
@@ -149,21 +187,53 @@ def _bot_toss_or_done(game: D.Game) -> str | None:
     return D.resolve_done(game)
 
 
+async def _owned(call: CallbackQuery) -> D.Game | None:
+    """Партия звонящего: чужому — «стол занят», без партии — «начни с !дурак»."""
+    global LAST_ACTIVE
+    if CURRENT is None or CURRENT.over or OWNER != call.from_user.id:
+        if CURRENT is not None and not CURRENT.over and OWNER is not None:
+            await call.answer(f"Стол занят — играет {OWNER_NAME}.",
+                              show_alert=True)
+        else:
+            await call.answer("Партии нет — начни с !дурак.", show_alert=True)
+        return None
+    LAST_ACTIVE = time.monotonic()
+    return CURRENT
+
+
+async def _finish_if_over(game: D.Game, user: Message | CallbackQuery) -> bool:
+    """Партия кончилась: раз в топ, стол свободен. True — конец."""
+    global CURRENT, OWNER
+    if not game.over:
+        return False
+    if id(game) not in _RECORDED:
+        _RECORDED.add(id(game))
+        uid = user.from_user.id
+        tag = (user.from_user.username or "").lstrip("@")
+        if game.winner is None:
+            outcome = "draw"
+        else:
+            outcome = "win" if game.winner == 0 else "loss"
+        try:
+            async with async_session_maker() as session:
+                await DurakDAO(session).record(
+                    uid, tag, user.from_user.full_name, outcome)
+        except Exception:
+            logger.exception("Дурак: не записал итог %s", uid)
+    if OWNER == user.from_user.id:
+        CURRENT, OWNER = None, None
+    return True
+
+
 @durak_router.message(F.chat.type == "private", Exact("!дурак"))
 async def durak_cmd(message: Message):
-    old_id = BOARDS.get(message.from_user.id)
-    if old_id is not None:
-        try:
-            await message.bot.delete_message(message.chat.id, old_id)
-        except TelegramAPIError:
-            pass
-    game = _new_session(message.from_user.id)
-    first = ("Первым ходишь ты (младший козырь у тебя)."
-             if game.attacker == 0 else "Первым ходит бот.")
-    await message.answer(f"Новая партия! {first}")
-    board = await message.answer(
-        _board_text(game), reply_markup=_board_kb(game), parse_mode="HTML")
-    BOARDS[message.from_user.id] = board.message_id
+    busy = _table_busy_for(message.from_user.id)
+    if busy:
+        await message.answer(
+            f"Стол занят — сейчас играет {busy}. Дождись конца партии.")
+        return
+    text, kb = _deck_text()
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @durak_router.message(F.chat.type.in_({"group", "supergroup"}), Exact("!дурак"))
@@ -171,43 +241,98 @@ async def durak_group_hint(message: Message):
     await message.reply("В дурака играем в личке: напиши мне !дурак.")
 
 
-def _session(call: CallbackQuery) -> D.Game | None:
-    return SESSIONS.get(call.from_user.id)
+@durak_router.message(Exact("!покертоп"))
+async def pokertop_cmd(message: Message):
+    async with async_session_maker() as session:
+        top = await DurakDAO(session).top()
+    if not top:
+        await message.answer(
+            "Пока никто не доиграл ни одной партии. Начни с !дурак в личке.")
+        return
+
+    lines = ["🏆 <b>Покертоп</b> — победы над ботом в дурака", DIVIDER]
+    for i, row in enumerate(top, 1):
+        name = html.escape(row.display or "без имени")
+        if row.username:
+            name += f" (@{html.escape(row.username.lstrip('@'))})"
+        games = row.wins + row.losses + row.draws
+        lines.append(
+            f"{i}. {name} — {row.wins} поб. · {row.losses} пораж. · "
+            f"{row.draws} нич. ({games} игр)")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@durak_router.callback_query(F.data.startswith(f"{CB}:deck:"))
+async def cb_deck(call: CallbackQuery):
+    try:
+        deck_size = int(call.data.split(":")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    if deck_size not in DECKS:
+        await call.answer()
+        return
+    busy = _table_busy_for(call.from_user.id)
+    if busy:
+        await call.answer(f"Стол занят — играет {busy}.", show_alert=True)
+        return
+    took_over = OWNER is not None and OWNER != call.from_user.id
+    old_id = BOARDS.get(call.from_user.id)
+    if old_id is not None and old_id != call.message.message_id:
+        try:
+            await call.bot.delete_message(call.message.chat.id, old_id)
+        except TelegramAPIError:
+            pass
+    game = _start_game(call.from_user.id,
+                       call.from_user.full_name, deck_size)
+    BOARDS[call.from_user.id] = call.message.message_id
+    first = ("Первым ходишь ты (младший козырь у тебя)."
+             if game.attacker == 0 else "Первым ходит бот.")
+    await call.answer()
+    if took_over:
+        await call.message.answer("Прошлый стол завис — забираю его себе.")
+    await call.message.answer(f"Новая партия на {game.deck_size}! {first}")
+    await _paint_board(call, game)
 
 
 @durak_router.callback_query(F.data == f"{CB}:new")
 async def cb_new(call: CallbackQuery):
+    busy = _table_busy_for(call.from_user.id)
+    if busy:
+        await call.answer(f"Стол занят — играет {busy}.", show_alert=True)
+        return
+    deck_size = LAST_DECK.get(call.from_user.id)
+    if deck_size is None:
+        text, kb = _deck_text()
+        await call.answer()
+        try:
+            await call.message.edit_text(text, reply_markup=kb,
+                                         parse_mode="HTML")
+        except TelegramAPIError:
+            pass
+        return
     await call.answer()
-    game = _new_session(call.from_user.id)
+    _start_game(call.from_user.id, call.from_user.full_name, deck_size)
     BOARDS[call.from_user.id] = call.message.message_id
-    await _paint_board(call, game)
+    await _paint_board(call, CURRENT)
 
 
 @durak_router.callback_query(F.data == f"{CB}:giveup")
 async def cb_giveup(call: CallbackQuery):
-    game = _session(call)
+    game = await _owned(call)
     if game is None:
-        await call.answer("Партии нет — начни с !дурак.", show_alert=True)
-        return
-    if game.over:
-        await call.answer()
-        await _paint_board(call, game)
         return
     game.over, game.winner = True, 1
     logger.info("Дурак: %s сдался", call.from_user.id)
     await call.answer("Сдался — бот выиграл.")
+    await _finish_if_over(game, call)
     await _paint_board(call, game)
 
 
 @durak_router.callback_query(F.data.startswith(f"{CB}:c:"))
 async def cb_card(call: CallbackQuery):
-    game = _session(call)
+    game = await _owned(call)
     if game is None:
-        await call.answer("Партии нет — начни с !дурак.", show_alert=True)
-        return
-    if game.over:
-        await call.answer()
-        await _paint_board(call, game)
         return
     try:
         card = int(call.data.split(":")[-1])
@@ -227,10 +352,10 @@ async def cb_card(call: CallbackQuery):
             return
         D.apply_attack(game, 0, card)
         took = _bot_answer_attack(game)
-        if took:
-            await call.answer(_final_line(game) if game.over else "Бот берёт.")
+        if await _finish_if_over(game, call):
+            await call.answer(_final_line(game))
         else:
-            await call.answer("Побито.")
+            await call.answer("Бот берёт." if took else "Побито.")
         await _paint_board(call, game)
         return
 
@@ -254,16 +379,16 @@ async def cb_card(call: CallbackQuery):
         await call.answer("Бот подкидывает.")
     else:
         await call.answer(_final_line(game))
+    await _finish_if_over(game, call)
     await _paint_board(call, game)
 
 
 @durak_router.callback_query(F.data == f"{CB}:done")
 async def cb_done(call: CallbackQuery):
-    game = _session(call)
+    game = await _owned(call)
     if game is None:
-        await call.answer("Партии нет — начни с !дурак.", show_alert=True)
         return
-    if game.over or game.attacker != 0 or not game.table:
+    if game.attacker != 0 or not game.table:
         await call.answer()
         return
     if D.uncovered(game):
@@ -272,27 +397,26 @@ async def cb_done(call: CallbackQuery):
         await _paint_board(call, game)
         return
     result = D.resolve_done(game)
-    if result is None:
+    if await _finish_if_over(game, call):
+        await call.answer(_final_line(game))
+    else:
         _bot_lead(game)
         await call.answer("Бито! Бот ходит.")
-    else:
-        await call.answer(_final_line(game))
     await _paint_board(call, game)
 
 
 @durak_router.callback_query(F.data == f"{CB}:take")
 async def cb_take(call: CallbackQuery):
-    game = _session(call)
+    game = await _owned(call)
     if game is None:
-        await call.answer("Партии нет — начни с !дурак.", show_alert=True)
         return
-    if game.over or game.attacker == 0:
+    if game.attacker == 0:
         await call.answer()
         return
     result = D.resolve_take(game)
-    if result is None:
+    if await _finish_if_over(game, call):
+        await call.answer(_final_line(game))
+    else:
         _bot_lead(game)
         await call.answer("Взял. Бот ходит снова.")
-    else:
-        await call.answer(_final_line(game))
     await _paint_board(call, game)
