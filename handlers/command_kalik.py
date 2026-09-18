@@ -1,11 +1,14 @@
-"""!калик и !топ курильщиков — пока только в личке.
+"""!калик и !топ курильщиков — в личке и во флуде.
 
-Каждый вызов !калик — +1 затяжка. Текст: «Фамилия Имя сделал N затяжек».
-Как только сумма чата добивает 50 — перезарядка: счётчики в ноль и час
-тишины, а вызов отвечает «Михаил забивает кальян и греет угли, таки
-подождите». Через час можно снова. Топ — общий по всем чатам.
+Каждый вызов !калик — случайные 1–10 затяжек. Текст: «Фамилия Имя сделал
+N затяжек». Как только сумма чата добивает 50 — перезарядка: счётчики
+в ноль и час тишины, а вызов отвечает «Михаил забивает кальян и греет
+угли, таки подождите». Все 50 в одно лицо — соло-бан: тот ждёт 2 часа,
+«Фамилия Имя всё выкурил весь кальян, следующая порция без тебя».
+Через час (два для соло) можно снова. Топ — общий по всем чатам.
 """
 import html
+import random
 from datetime import timedelta
 
 from aiogram import Router
@@ -22,8 +25,9 @@ kalik_router = Router()
 
 RELOAD_AT = 50
 COOLDOWN = timedelta(hours=1)
+SOLO_BAN = timedelta(hours=2)
 RELOAD_TEXT = "Михаил забивает кальян и греет угли, таки подождите"
-LS_ONLY = "Калик пока живёт в личке — напиши мне 🙂"
+SOLO_TEXT = "всё выкурил весь кальян, следующая порция без тебя"
 
 
 class Exact(BaseFilter):
@@ -42,31 +46,40 @@ def _name(user) -> str:
 
 @kalik_router.message(Exact("!калик"))
 async def kalik_cmd(message: Message):
-    if message.chat.type != "private":
-        await message.reply(LS_ONLY)
-        return
     now = msk_now()
+    uid = message.from_user.id
+    name = _name(message.from_user)
     async with async_session_maker() as session:
         dao = KalikDAO(session)
+        banned = await dao.ban_until(message.chat.id, uid)
+        if banned is not None and banned > now:
+            await message.reply(f"🚬 {name} {SOLO_TEXT} 💨")
+            return
         until = await dao.cooldown_until(message.chat.id)
         if until is not None:
             if until > now:
                 await message.reply(f"🚬 {RELOAD_TEXT}")
                 return
             await dao.reset(message.chat.id)
+        hit = random.randint(1, 10)
         personal, total = await dao.puff(
-            message.chat.id, message.from_user.id,
+            message.chat.id, uid,
             (message.from_user.username or "").lstrip("@"),
-            message.from_user.full_name,
+            message.from_user.full_name, hit,
         )
         if total >= RELOAD_AT:
+            solo = await dao.contributors(message.chat.id) == [uid]
             await dao.reset(message.chat.id)
             await dao.set_cooldown(message.chat.id, now + COOLDOWN)
-            await message.reply(f"🚬 {RELOAD_TEXT} 💨")
+            if solo:
+                await dao.set_ban(message.chat.id, uid, now + SOLO_BAN)
+                await message.reply(f"🚬 {name} {SOLO_TEXT} 💨")
+            else:
+                await message.reply(f"🚬 {RELOAD_TEXT} 💨")
             return
     left = RELOAD_AT - total
     await message.reply(
-        f"🚬 {_name(message.from_user)} сделал {personal} "
+        f"🚬 {name} сделал {personal} "
         f"{plural(personal, 'затяжку', 'затяжки', 'затяжек')} 💨\n"
         f"До перезарядки: {left} {plural(left, 'затяжка', 'затяжки', 'затяжек')}",
         parse_mode="HTML",
@@ -75,9 +88,6 @@ async def kalik_cmd(message: Message):
 
 @kalik_router.message(Exact("!топ курильщиков"))
 async def kaliktop_cmd(message: Message):
-    if message.chat.type != "private":
-        await message.reply(LS_ONLY)
-        return
     async with async_session_maker() as session:
         top = await KalikDAO(session).top()
     if not top:

@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.kalik_models import KalikCooldown, KalikPuff
+from database.kalik_models import KalikBan, KalikCooldown, KalikPuff
 from utils.helpers import msk_now
 
 
@@ -13,8 +13,9 @@ class KalikDAO:
         self.session = session
 
     async def puff(self, chat_id: int, user_id: int,
-                   username: str, display: str) -> tuple[int, int]:
-        """+1 затяжка. Возвращает (личный счёт, сумма чата)."""
+                   username: str, display: str, amount: int,
+                   ) -> tuple[int, int]:
+        """+amount затяжек. Возвращает (личный счёт, сумма чата)."""
         row = await self.session.get(KalikPuff, (chat_id, user_id))
         if row is None:
             # Нули явно: default=0 срабатывает только в INSERT.
@@ -22,7 +23,7 @@ class KalikDAO:
                             username=username or "", display=display or "",
                             updated_at=msk_now())
             self.session.add(row)
-        row.count += 1
+        row.count += amount
         row.username = username or row.username
         row.display = display or row.display
         row.updated_at = msk_now()
@@ -49,11 +50,30 @@ class KalikDAO:
         await self.session.commit()
 
     async def reset(self, chat_id: int) -> None:
-        """Новая чаша: счётчики в ноль, перезарядка снята."""
+        """Новая чаша: счётчики в ноль, перезарядка снята. Баны живут сами."""
         await self.session.execute(
             delete(KalikPuff).where(KalikPuff.chat_id == chat_id))
         await self.session.execute(
             delete(KalikCooldown).where(KalikCooldown.chat_id == chat_id))
+        await self.session.commit()
+
+    async def contributors(self, chat_id: int) -> list[int]:
+        """Кто курил в текущей чаше."""
+        query = select(KalikPuff.user_id).where(
+            KalikPuff.chat_id == chat_id, KalikPuff.count > 0)
+        return list((await self.session.execute(query)).scalars().all())
+
+    async def ban_until(self, chat_id: int, user_id: int) -> datetime | None:
+        row = await self.session.get(KalikBan, (chat_id, user_id))
+        return row.until if row is not None else None
+
+    async def set_ban(self, chat_id: int, user_id: int, until: datetime) -> None:
+        row = await self.session.get(KalikBan, (chat_id, user_id))
+        if row is None:
+            row = KalikBan(chat_id=chat_id, user_id=user_id, until=until)
+            self.session.add(row)
+        else:
+            row.until = until
         await self.session.commit()
 
     async def top(self, limit: int = 10) -> list:

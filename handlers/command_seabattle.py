@@ -85,9 +85,9 @@ def _is_group_chat(chat) -> bool:
 
 def _grid(board: S.Board, *, own: bool,
             ghost: set[int] = frozenset(), ghost_ok: bool = True) -> str:
-    """Поле текстом. Своё: корабли видны; чужое: только попадания.
+    """Поле текстом с координатами. Своё: корабли видны; чужое: попадания.
     Призрак — двигающийся корабль: ⛴️ влезает, 🟥 нет."""
-    rows = []
+    out = ["  " + " ".join(S.LETTERS)]
     for r in range(S.N):
         line = []
         for c in range(S.N):
@@ -104,8 +104,8 @@ def _grid(board: S.Board, *, own: bool,
                 line.append("🚢")
             else:
                 line.append("🟦")
-        rows.append("".join(line))
-    return "\n".join(rows)
+        out.append(f"{r + 1:>2} " + "".join(line))
+    return "\n".join(out)
 
 
 def _ghost(seat: Seat) -> tuple[set[int], bool]:

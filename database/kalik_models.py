@@ -30,3 +30,15 @@ class KalikCooldown(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True,
                                          autoincrement=False)
     until: Mapped[datetime] = mapped_column(DateTime)
+
+
+class KalikBan(Base):
+    """Личный бан соло-курильщика: все 50 в одно лицо — ждёт 2 часа."""
+
+    __tablename__ = "kalik_bans"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True,
+                                         autoincrement=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True,
+                                         autoincrement=False)
+    until: Mapped[datetime] = mapped_column(DateTime)
