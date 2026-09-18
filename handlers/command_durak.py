@@ -1,9 +1,10 @@
 """Подкидной дурак с ботом — в личке и во флуде.
 
 Человек (игрок 0) против бота (игрок 1). Свои карты — кнопками, чужие не
-видны. Ход игры пошаговый: после каждого действия человека бот мгновенно
-отвечает (бьёт, подкидывает или ведёт новый заход), так что отдельного
-состояния «ход бота» нет — доска всегда ждёт решения человека или финал.
+видны. Ритм как за столом: нападающий докидывает сколько хочет, «Бито» —
+и защитник отвечает сразу по всему столу (кроет всё или берёт всё).
+Поэтому бот, отбиваясь, видит все подкиды разом, а не по одной карте.
+Когда отбивается человек — он кроет по одной, бот подкидывает ещё.
 
 Столы: во флуде стол один на всех (пока один не доиграл, второй ждёт),
 в личке у каждого свой — до 50 одновременных. Зависший стол (тишина дольше
@@ -112,7 +113,8 @@ def _board_text(game: D.Game, display: str, name: str) -> str:
         lines += ["", _final_line(game)]
     elif game.attacker == 0:
         if game.table:
-            lines += ["", "Твой ход: подкинь карту или жми «Бито»."]
+            lines += ["", "Твой ход: докидывай карты и жми «Бито» — "
+                         "бот ответит по всему столу разом."]
         else:
             lines += ["", "Твой ход — клади карту."]
     else:
@@ -208,16 +210,16 @@ def _bot_lead(game: D.Game) -> None:
     D.apply_attack(game, 1, lead)
 
 
-def _bot_answer_attack(game: D.Game) -> str | None:
-    """Бот кроет только что подкинутую карту. 'take' — не смог и берёт всё
-    (человек ходит снова), None — побил, бой продолжается."""
-    att = game.table[-1][0]
-    beater = D.ai_min_beater(game, 1, att)
-    if beater is None:
+def _bot_answer_full(game: D.Game) -> str:
+    """Бот отвечает по всему столу разом: 'took' — берёт всё (не смог
+    покрыть хоть что-то), 'covered' — покрыл всё. Вызывать на «Бито»."""
+    plan = D.ai_defense_full(game, 1)
+    if plan is None:
         D.resolve_take(game)
-        return "take"
-    D.apply_defense(game, 1, att, beater)
-    return None
+        return "took"
+    for att, dfn in plan.items():
+        D.apply_defense(game, 1, att, dfn)
+    return "covered"
 
 
 def _bot_toss_or_done(game: D.Game) -> str | None:
@@ -434,17 +436,14 @@ async def cb_card(call: CallbackQuery):
         return
 
     if game.attacker == 0:
-        # Человек нападает/подкидывает — бот тут же кроет.
+        # Человек нападает/подкидывает — карта просто ложится на стол.
+        # Бот ответит разом, когда человек нажмёт «Бито».
         if card not in D.legal_attacks(game, 0):
             await call.answer("Так подкинуть нельзя: нужен ранг со стола.",
                               show_alert=True)
             return
         D.apply_attack(game, 0, card)
-        took = _bot_answer_attack(game)
-        if await _finish_if_over(seat, call):
-            await call.answer(_final_line(game))
-        else:
-            await call.answer("Бот берёт." if took else "Побито.")
+        await call.answer()
         await _paint_board(call, seat)
         return
 
@@ -481,9 +480,12 @@ async def cb_done(call: CallbackQuery):
     if game.attacker != 0 or not game.table:
         await call.answer()
         return
-    if D.uncovered(game):
-        # Недостижимо: бот кроет каждый подкид сразу. Страховка от assert.
-        await call.answer("Подожди, бот ещё отвечает.", show_alert=True)
+    # «Бито»: бот отвечает по всему столу разом — кроет всё или берёт всё.
+    if _bot_answer_full(game) == "took":
+        if await _finish_if_over(seat, call):
+            await call.answer(_final_line(game))
+        else:
+            await call.answer("Бот берёт.")
         await _paint_board(call, seat)
         return
     result = D.resolve_done(game)
