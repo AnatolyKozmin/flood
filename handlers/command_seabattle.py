@@ -1,8 +1,10 @@
 """Морской бой с ботом 10 на 10 — в личке и во флуде.
 
-Расстановка на выбор: сам (нос → конец, с проверкой касаний) или авто.
-В личке у каждого свой стол (до 50), во флуде стол один на всех. Кнопки
-жмёт только занявший стол. Бот ищет по шахматке и добивает раненые.
+Расстановка на выбор: сам стрелками (корабль-призрак двигается ◀️▶️⬆️⬇️,
+↪️ поворачивает вокруг носа, ✅ ставит) или авто. Порядок: сначала
+четырёхпалубный, потом 3, 2 и 1. В личке у каждого свой стол (до 50),
+во флуде стол один на всех. Кнопки жмёт только занявший стол. Бот ищет
+по шахматке и добивает раненые.
 
 Два сообщения на партию: главное (чужое поле / расстановка) и своё поле
 (корабли + кнопка сдаться — она там, чтобы не превышать лимит 100 кнопок
@@ -46,8 +48,8 @@ class Seat:
     phase: str = "placing"  # placing | battle | over
     to_place: list[int] = field(default_factory=list)
     history: list[set[int]] = field(default_factory=list)  # встал — для отмены
-    start: int | None = None  # выбранный нос при ручной расстановке
-    place_row: int | None = None  # выбранный ряд расстановки
+    cursor: int = 0  # нос корабля-призрака при ручной расстановке
+    vertical: bool = False  # призрак стоит вертикально
     shot_row: int | None = None  # выбранный ряд обстрела
     main_msg: tuple[int, int] | None = None  # (chat_id, msg_id) главного
     own_msg: tuple[int, int] | None = None  # (chat_id, msg_id) своего поля
@@ -81,14 +83,18 @@ def _is_group_chat(chat) -> bool:
     return chat.type in ("group", "supergroup")
 
 
-def _grid(board: S.Board, *, own: bool) -> str:
-    """Поле текстом. Своё: корабли видны; чужое: только попадания."""
+def _grid(board: S.Board, *, own: bool,
+            ghost: set[int] = frozenset(), ghost_ok: bool = True) -> str:
+    """Поле текстом. Своё: корабли видны; чужое: только попадания.
+    Призрак — двигающийся корабль: ⛴️ влезает, 🟥 нет."""
     rows = []
     for r in range(S.N):
         line = []
         for c in range(S.N):
             cell = r * S.N + c
-            if cell in board.sunk:
+            if cell in ghost:
+                line.append("⛴️" if ghost_ok else "🟥")
+            elif cell in board.sunk:
                 line.append("🔥")
             elif board.shots.get(cell) == "hit":
                 line.append("💥")
@@ -102,6 +108,27 @@ def _grid(board: S.Board, *, own: bool) -> str:
     return "\n".join(rows)
 
 
+def _ghost(seat: Seat) -> tuple[set[int], bool]:
+    """Клетки призрака и влезает ли он."""
+    cells = S.ship_cells(seat.cursor, seat.to_place[0], seat.vertical)
+    if cells is None:
+        return set(), False
+    return cells, S.can_place(seat.player, cells)
+
+
+def _default_cursor(board: S.Board, size: int) -> tuple[int, bool]:
+    """Первый влезающий нос построчно, сначала горизонтально."""
+    for start in range(S.N * S.N):
+        cells = S.ship_cells(start, size, False)
+        if cells is not None and S.can_place(board, cells):
+            return start, False
+    for start in range(S.N * S.N):
+        cells = S.ship_cells(start, size, True)
+        if cells is not None and S.can_place(board, cells):
+            return start, True
+    return 0, False
+
+
 def _ship_word(size: int) -> str:
     return {4: "четырёхпалубный", 3: "трёхпалубный",
             2: "двухпалубный", 1: "однопалубный"}[size]
@@ -112,17 +139,10 @@ def _main_text(seat: Seat) -> str:
     if seat.phase == "placing":
         size = seat.to_place[0]
         left = len(seat.to_place)
-        body = _grid(seat.player, own=True)
-        if seat.start is None:
-            if seat.place_row is None:
-                tail = (f"\nСтавь {_ship_word(size)} (осталось кораблей: {left}): "
-                        f"выбери ряд.")
-            else:
-                tail = (f"\nСтавь {_ship_word(size)} (осталось кораблей: {left}): "
-                        f"выбери нос в ряду {seat.place_row + 1}.")
-        else:
-            tail = (f"\nНос — <b>{S.cell_label(seat.start)}</b>, "
-                    f"{_ship_word(size)}: выбери конец.")
+        ghost, ok = _ghost(seat)
+        body = _grid(seat.player, own=True, ghost=ghost, ghost_ok=ok)
+        tail = (f"\nСтавь {_ship_word(size)} (осталось кораблей: {left}): "
+                f"двигай стрелками, ↪️ повернуть, ✅ поставить.")
         return head + body + tail
     body = _grid(seat.enemy, own=False)
     if seat.phase == "over":
@@ -143,28 +163,12 @@ def _main_kb(seat: Seat) -> InlineKeyboardMarkup | None:
     if seat.phase == "over":
         return _kb([_btn("🔄 Новая", "new")])
     if seat.phase == "placing":
-        if seat.start is not None:
-            ends = S.valid_ends(seat.player, seat.start, seat.to_place[0])
-            rows = [[_btn(S.cell_label(c), f"end:{c}") for c in ends]]
-            rows.append([_btn("↩️ Назад", "back")])
-            return _kb(*rows)
-        size = seat.to_place[0]
-        starts = set(S.valid_starts(seat.player, size))
-        if seat.place_row is None:
-            rows = [[_btn(f"Ряд {r + 1}", f"prow:{r}")
-                     for r in _rows_with(starts)[i:i + 5]]
-                    for i in range(0, len(_rows_with(starts)), 5)]
-            extra = []
-            if seat.history:
-                extra.append(_btn("↩️ Отменить последний", "undo"))
-            extra.append(_btn("🔀 Авто: доставить остальные", "auto"))
-            rows.append(extra)
-            return _kb(*rows) if rows else None
-        in_row = sorted(c for c in starts if c // S.N == seat.place_row)
-        rows = [[_btn(S.cell_label(c), f"cell:{c}") for c in in_row[i:i + 5]]
-                for i in range(0, len(in_row), 5)]
-        rows.append([_btn("↩️ Ряды", "rows")])
-        return _kb(*rows) if rows else None
+        rows = [[_btn("◀️", "mv:l"), _btn("▶️", "mv:r"),
+                 _btn("⬆️", "mv:u"), _btn("⬇️", "mv:d")],
+                [_btn("↪️ Повернуть", "rot"), _btn("✅ Поставить", "ok")],
+                [_btn("↩️ Отменить", "undo"),
+                 _btn("🔀 Авто", "auto")]]
+        return _kb(*rows)
     if seat.shot_row is None:
         unknown = [c for c in range(S.N * S.N) if c not in seat.enemy.shots]
         rows = [[_btn(f"Ряд {r + 1}", f"brow:{r}")
@@ -255,6 +259,8 @@ async def _new_seat(user, group: bool, auto: bool) -> Seat:
         _begin_battle(seat)
     else:
         seat.to_place = list(S.FLEET)
+        seat.cursor, seat.vertical = _default_cursor(seat.player,
+                                                    seat.to_place[0])
     if group:
         GROUP_SEAT = seat
     else:
@@ -267,7 +273,6 @@ async def _new_seat(user, group: bool, auto: bool) -> Seat:
 def _begin_battle(seat: Seat) -> None:
     seat.enemy = S.random_fleet(random.Random())
     seat.phase = "battle"
-    seat.start = None
 
 
 def _release(seat: Seat) -> None:
@@ -375,100 +380,64 @@ async def cb_mode(call: CallbackQuery):
     await _paint(seat, call.bot)
 
 
-@seabattle_router.callback_query(F.data.startswith(f"{CB}:cell:"))
-async def cb_cell(call: CallbackQuery):
-    seat = await _owned(call)
-    if seat is None or seat.phase != "placing" or seat.start is not None:
-        await call.answer()
-        return
-    try:
-        start = int(call.data.split(":")[-1])
-    except ValueError:
-        await call.answer()
-        return
-    size = seat.to_place[0]
-    if start not in S.valid_starts(seat.player, size):
-        await call.answer("Сюда не встанет.", show_alert=True)
-        await _paint(seat, call.bot)
-        return
-    ends = S.valid_ends(seat.player, start, size)
-    if not ends:
-        await call.answer("Сюда не встанет.", show_alert=True)
-        return
-    if len(ends) == 1 and ends[0] == start:
-        # Однопалубный — ставить сразу, без экрана конца.
-        S.place(seat.player, {start})
-        seat.history.append({start})
-        seat.to_place.pop(0)
-        seat.place_row = None
-        await call.answer(f"{S.cell_label(start)} — встал.")
-        if not seat.to_place:
-            _begin_battle(seat)
-            await call.message.answer("Флот готов! Ты стреляешь первым.")
-        await _paint(seat, call.bot)
-        return
-    seat.start = start
-    await call.answer()
-    await _paint(seat, call.bot)
-
-
-@seabattle_router.callback_query(F.data.startswith(f"{CB}:end:"))
-async def cb_end(call: CallbackQuery):
-    seat = await _owned(call)
-    if seat is None or seat.phase != "placing" or seat.start is None:
-        await call.answer()
-        return
-    try:
-        end = int(call.data.split(":")[-1])
-    except ValueError:
-        await call.answer()
-        return
-    size = seat.to_place[0]
-    start = seat.start
-    if end not in S.valid_ends(seat.player, start, size):
-        seat.start = None
-        await call.answer("Уже не встанет — выбери нос заново.",
-                          show_alert=True)
-        await _paint(seat, call.bot)
-        return
-    if S.row_of(end) == S.row_of(start):
-        cells = {r for r in range(min(start, end), max(start, end) + 1)}
-    else:
-        lo, hi = sorted((start, end))
-        cells = {c for c in range(lo, hi + 1, S.N)}
-    if len(cells) != size or not S.can_place(seat.player, cells):
-        seat.start = None
-        await call.answer("Уже не встанет — выбери нос заново.",
-                          show_alert=True)
-        await _paint(seat, call.bot)
-        return
-    S.place(seat.player, cells)
-    seat.history.append(set(cells))
-    seat.to_place.pop(0)
-    seat.start = None
-    seat.place_row = None
-    await call.answer("Встал.")
-    if not seat.to_place:
-        _begin_battle(seat)
-        await call.message.answer("Флот готов! Ты стреляешь первым.")
-    await _paint(seat, call.bot)
-
-
-@seabattle_router.callback_query(F.data == f"{CB}:back")
-async def cb_back(call: CallbackQuery):
+@seabattle_router.callback_query(F.data.startswith(f"{CB}:mv:"))
+async def cb_move(call: CallbackQuery):
     seat = await _owned(call)
     if seat is None or seat.phase != "placing":
         await call.answer()
         return
-    seat.start = None
+    direction = call.data.split(":")[-1]
+    r, c = seat.cursor // S.N, seat.cursor % S.N
+    delta = {"l": (0, -1), "r": (0, 1), "u": (-1, 0), "d": (1, 0)}.get(direction)
+    if delta is None:
+        await call.answer()
+        return
+    nr, nc = r + delta[0], c + delta[1]
+    if 0 <= nr < S.N and 0 <= nc < S.N:
+        seat.cursor = nr * S.N + nc
     await call.answer()
+    await _paint(seat, call.bot)
+
+
+@seabattle_router.callback_query(F.data == f"{CB}:rot")
+async def cb_rot(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None or seat.phase != "placing":
+        await call.answer()
+        return
+    seat.vertical = not seat.vertical  # поворот вокруг носа; не влез — покраснеет
+    await call.answer()
+    await _paint(seat, call.bot)
+
+
+@seabattle_router.callback_query(F.data == f"{CB}:ok")
+async def cb_ok(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None or seat.phase != "placing":
+        await call.answer()
+        return
+    ghost, ok = _ghost(seat)
+    if not ok:
+        await call.answer("Здесь не встанет — подвинь или поверни.",
+                          show_alert=True)
+        return
+    S.place(seat.player, ghost)
+    seat.history.append(set(ghost))
+    seat.to_place.pop(0)
+    await call.answer("Встал.")
+    if not seat.to_place:
+        _begin_battle(seat)
+        await call.message.answer("Флот готов! Ты стреляешь первым.")
+    else:
+        seat.cursor, seat.vertical = _default_cursor(
+            seat.player, seat.to_place[0])
     await _paint(seat, call.bot)
 
 
 @seabattle_router.callback_query(F.data == f"{CB}:undo")
 async def cb_undo(call: CallbackQuery):
     seat = await _owned(call)
-    if seat is None or seat.phase != "placing" or seat.start is not None:
+    if seat is None or seat.phase != "placing":
         await call.answer()
         return
     if not seat.history:
@@ -478,7 +447,8 @@ async def cb_undo(call: CallbackQuery):
     cells = seat.history.pop()
     seat.player.ships = [s for s in seat.player.ships if s != cells]
     seat.to_place.insert(0, len(cells))
-    seat.place_row = None
+    seat.cursor, seat.vertical = _default_cursor(seat.player,
+                                                seat.to_place[0])
     await call.answer("Убрал последний.")
     await _paint(seat, call.bot)
 
@@ -486,7 +456,7 @@ async def cb_undo(call: CallbackQuery):
 @seabattle_router.callback_query(F.data == f"{CB}:auto")
 async def cb_auto(call: CallbackQuery):
     seat = await _owned(call)
-    if seat is None or seat.phase != "placing" or seat.start is not None:
+    if seat is None or seat.phase != "placing":
         await call.answer()
         return
     rng = random.Random()
@@ -513,34 +483,7 @@ async def cb_auto(call: CallbackQuery):
 
 @seabattle_router.callback_query(F.data.startswith(f"{CB}:prow:"))
 async def cb_prow(call: CallbackQuery):
-    seat = await _owned(call)
-    if seat is None or seat.phase != "placing" or seat.start is not None:
-        await call.answer()
-        return
-    try:
-        row = int(call.data.split(":")[-1])
-    except ValueError:
-        await call.answer()
-        return
-    size = seat.to_place[0]
-    if row not in _rows_with(set(S.valid_starts(seat.player, size))):
-        await call.answer("В этом ряду уже не встанет.", show_alert=True)
-        await _paint(seat, call.bot)
-        return
-    seat.place_row = row
-    await call.answer()
-    await _paint(seat, call.bot)
-
-
-@seabattle_router.callback_query(F.data == f"{CB}:rows")
-async def cb_rows(call: CallbackQuery):
-    seat = await _owned(call)
-    if seat is None or seat.phase != "placing":
-        await call.answer()
-        return
-    seat.place_row = None
-    await call.answer()
-    await _paint(seat, call.bot)
+    await call.answer("Выбор рядами убран — двигай корабль стрелками.")
 
 
 @seabattle_router.callback_query(F.data.startswith(f"{CB}:brow:"))
