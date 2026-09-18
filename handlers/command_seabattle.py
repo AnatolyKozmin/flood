@@ -87,7 +87,7 @@ def _grid(board: S.Board, *, own: bool,
             ghost: set[int] = frozenset(), ghost_ok: bool = True) -> str:
     """Поле текстом с координатами. Своё: корабли видны; чужое: попадания.
     Призрак — двигающийся корабль: ⛴️ влезает, 🟥 нет."""
-    out = ["  " + " ".join(S.LETTERS)]
+    out = ["   " + "  ".join(S.LETTERS)]
     for r in range(S.N):
         line = []
         for c in range(S.N):
@@ -104,7 +104,7 @@ def _grid(board: S.Board, *, own: bool,
                 line.append("🚢")
             else:
                 line.append("🟦")
-        out.append(f"{r + 1:>2} " + "".join(line))
+        out.append(f"{r + 1:>2} " + " ".join(line))
     return "\n".join(out)
 
 

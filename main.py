@@ -21,6 +21,7 @@ from handlers.command_durak import durak_router
 from handlers.command_candle import candle_router
 from handlers.command_seabattle import seabattle_router
 from handlers.command_kalik import kalik_router
+from handlers.command_bar import bar_router
 from handlers.command_mod import mod_router
 from handlers.command_admin import admin_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
@@ -57,6 +58,7 @@ dp.include_router(durak_router)
 dp.include_router(candle_router)
 dp.include_router(seabattle_router)
 dp.include_router(kalik_router)
+dp.include_router(bar_router)
 dp.include_router(top_router)
 dp.include_router(all_router)
 
