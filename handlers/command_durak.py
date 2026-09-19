@@ -2,8 +2,8 @@
 
 Человек (игрок 0) против бота (игрок 1). Свои карты — кнопками, чужие не
 видны. Ритм классический: бот кроет каждый подкид сразу; докинул всё —
-«Бито». В переводном режиме отбивающийся может перевести тем же рангом,
-пока ничего не побито (кнопка «Перевести»), бот переводит так же.
+«Бито». В переводном режиме отбивающийся может перевести непокрытую карту
+тем же рангом (кнопка «Перевести»), бот переводит так же.
 
 Столы: во флуде стол один на всех (пока один не доиграл, второй ждёт),
 в личке у каждого свой — до 50 одновременных. Зависший стол (тишина дольше
@@ -238,10 +238,13 @@ def _bot_lead(game: D.Game) -> None:
 
 def _bot_answer_attack(game: D.Game, allow_redirect: bool = False,
                        ) -> str | None:
-    """Бот отвечает на только что подкинутую карту. 'take' — берёт всё,
-    'redirect' — переводит (только в переводном и пока стол чистый),
-    None — побил, бой продолжается."""
-    att = game.table[-1][0]
+    """Бот отвечает на последнюю непокрытую карту: 'take' — берёт всё,
+    'redirect' — переводит (только в переводном),
+    None — побил, бой продолжается. Некого крыть — тоже None."""
+    open_rows = [att for att, dfn in game.table if dfn is None]
+    if not open_rows:
+        return None
+    att = open_rows[-1]
     beater = D.ai_min_beater(game, 1, att)
     if beater is not None:
         D.apply_defense(game, 1, att, beater)
@@ -533,8 +536,15 @@ async def cb_card(call: CallbackQuery):
         None,
     )
     if target is None:
-        await call.answer(
-            f"{D.card_label(card)} ничего со стола не бьёт.", show_alert=True)
+        if seat.mode == "transfer" and card in D.can_redirect(game, 0):
+            await call.answer(
+                f"{D.card_label(card)} не бьёт, но годится для перевода — "
+                f"жми «Перевести».",
+                show_alert=True)
+        else:
+            await call.answer(
+                f"{D.card_label(card)} ничего со стола не бьёт.",
+                show_alert=True)
         return
     D.apply_defense(game, 0, target, card)
     if D.uncovered(game):
