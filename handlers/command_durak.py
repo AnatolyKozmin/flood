@@ -557,12 +557,14 @@ async def cb_done(call: CallbackQuery):
         return
     for att, dfn in plan.items():
         D.apply_defense(game, 1, att, dfn)
+    covers = ", ".join(f"{D.card_label(a)}→{D.card_label(d)}"
+                       for a, d in plan.items())
     result = D.resolve_done(game)
     if await _finish_if_over(seat, call):
-        await call.answer(_final_line(game))
+        await call.answer(f"Бот побил: {covers}. {_final_line(game)}")
     else:
         _bot_lead(game)
-        await call.answer("Бито! Бот ходит.")
+        await call.answer(f"Бито! Бот побил: {covers}. Бот ходит.")
     await _paint_board(call, seat)
 
 
