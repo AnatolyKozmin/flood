@@ -1,10 +1,11 @@
 """Подкидной дурак с ботом — в личке и во флуде.
 
 Человек (игрок 0) против бота (игрок 1). Свои карты — кнопками, чужие не
-видны. Ритм как за столом: нападающий докидывает сколько хочет, «Бито» —
-и защитник отвечает сразу по всему столу (кроет всё или берёт всё).
-Поэтому бот, отбиваясь, видит все подкиды разом, а не по одной карте.
-Когда отбивается человек — он кроет по одной, бот подкидывает ещё.
+видны. Подкидной + переводной: нападающий докидывает сколько хочет,
+«Бито» — и защитник отвечает сразу по всему столу (кроет всё, берёт всё
+или переводит тем же рангом, пока ничего не побито). Когда отбивается
+человек — он кроет по одной (кнопка «Перевести» — пока стол чистый),
+бот подкидывает ещё.
 
 Столы: во флуде стол один на всех (пока один не доиграл, второй ждёт),
 в личке у каждого свой — до 50 одновременных. Зависший стол (тишина дольше
@@ -52,6 +53,7 @@ class Seat:
     display: str
     deck: int
     board: tuple[int, int] | None = None  # (chat_id, msg_id) доски
+    redirecting: bool = False  # человек выбирает карту для перевода
     last_active: float = field(default_factory=time.monotonic)
 
 
@@ -117,6 +119,8 @@ def _board_text(game: D.Game, display: str, name: str) -> str:
                          "бот ответит по всему столу разом."]
         else:
             lines += ["", "Твой ход — клади карту."]
+    elif D.can_redirect(game, 0):
+        lines += ["", "Отбивайся картой, бери или жми «Перевести»."]
     else:
         lines += ["", "Отбивайся картой или жми «Беру»."]
     return "\n".join(lines)
@@ -130,9 +134,15 @@ def _final_line(game: D.Game) -> str:
     return "🤝 <b>Ничья!</b>"
 
 
-def _board_kb(game: D.Game) -> InlineKeyboardMarkup:
+def _board_kb(game: D.Game, redirecting: bool = False) -> InlineKeyboardMarkup:
     if game.over:
         return _kb([_btn("🔄 Ещё партию", "new")])
+    if redirecting:
+        opts = D.can_redirect(game, 0)
+        rows = [[_btn(D.card_label(c), f"rc:{c}") for c in opts[i:i + 3]]
+                for i in range(0, len(opts), 3)]
+        rows.append([_btn("↩️ Отмена", "redirx")])
+        return _kb(*rows)
     rows: list[list[InlineKeyboardButton]] = []
     hand = _sorted_hand(game, 0)
     for i in range(0, len(hand), 3):
@@ -144,13 +154,17 @@ def _board_kb(game: D.Game) -> InlineKeyboardMarkup:
         actions.append(_btn("🏳️ Сдаться", "giveup"))
         rows.append(actions)
     else:
-        rows.append([_btn("🫳 Беру", "take"), _btn("🏳️ Сдаться", "giveup")])
+        actions = [_btn("🫳 Беру", "take")]
+        if D.can_redirect(game, 0):
+            actions.append(_btn("↪️ Перевести", "redir"))
+        actions.append(_btn("🏳️ Сдаться", "giveup"))
+        rows.append(actions)
     return _kb(*rows)
 
 
 async def _paint_board(target: Message | CallbackQuery, seat: Seat) -> None:
     text = _board_text(seat.game, seat.display, seat.name)
-    kb = _board_kb(seat.game)
+    kb = _board_kb(seat.game, seat.redirecting)
     message = target if isinstance(target, Message) else target.message
     if isinstance(target, CallbackQuery):
         try:
@@ -210,18 +224,6 @@ def _bot_lead(game: D.Game) -> None:
     D.apply_attack(game, 1, lead)
 
 
-def _bot_answer_full(game: D.Game) -> str:
-    """Бот отвечает по всему столу разом: 'took' — берёт всё (не смог
-    покрыть хоть что-то), 'covered' — покрыл всё. Вызывать на «Бито»."""
-    plan = D.ai_defense_full(game, 1)
-    if plan is None:
-        D.resolve_take(game)
-        return "took"
-    for att, dfn in plan.items():
-        D.apply_defense(game, 1, att, dfn)
-    return "covered"
-
-
 def _bot_toss_or_done(game: D.Game) -> str | None:
     """После того как человек всё побил: бот подкидывает или заканчивает
     заход. Возвращает итог партии ('user'/'bot'/'draw') или None."""
@@ -233,8 +235,8 @@ def _bot_toss_or_done(game: D.Game) -> str | None:
 
 
 async def _owned(call: CallbackQuery) -> Seat | None:
-    """Стол звонящего: чужой — «стол занят», без партии — «начни с !дурак».
-    Пулемёт по кнопкам режем молча: чаще THROTTLE_SEC — игнор."""
+    """Стол звонящего: чужой — «стол занят», без партии — «начни с !дурак»,
+    со старой доски — «доска устарела». Пулемёт режем молча."""
     uid = call.from_user.id
     if _is_group_chat(call.message.chat):
         seat = GROUP_SEAT
@@ -251,6 +253,10 @@ async def _owned(call: CallbackQuery) -> Seat | None:
         if seat is None or seat.game.over:
             await call.answer("Партии нет — начни с !дурак.", show_alert=True)
             return None
+    if BOARDS.get(uid) != (call.message.chat.id, call.message.message_id):
+        await call.answer("Доска устарела — играй на новой.",
+                          show_alert=True)
+        return None
     now = time.monotonic()
     if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
         await call.answer()
@@ -448,6 +454,10 @@ async def cb_card(call: CallbackQuery):
         return
 
     # Человек отбивается: карта должна бить непокрытую.
+    if seat.redirecting:
+        await call.answer("Выбери карту для перевода или отмени.",
+                          show_alert=True)
+        return
     target = next(
         (att for att in D.uncovered(game) if D.beats(att, card, game.trump)),
         None,
@@ -471,6 +481,53 @@ async def cb_card(call: CallbackQuery):
     await _paint_board(call, seat)
 
 
+@durak_router.callback_query(F.data == f"{CB}:redir")
+async def cb_redir(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None:
+        return
+    if seat.game.attacker == 0 or not D.can_redirect(seat.game, 0):
+        await call.answer()
+        await _paint_board(call, seat)
+        return
+    seat.redirecting = True
+    await call.answer("Чем переводишь?")
+    await _paint_board(call, seat)
+
+
+@durak_router.callback_query(F.data == f"{CB}:redirx")
+async def cb_redirx(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None:
+        return
+    seat.redirecting = False
+    await call.answer()
+    await _paint_board(call, seat)
+
+
+@durak_router.callback_query(F.data.startswith(f"{CB}:rc:"))
+async def cb_rc(call: CallbackQuery):
+    seat = await _owned(call)
+    if seat is None:
+        return
+    game = seat.game
+    try:
+        card = int(call.data.split(":")[-1])
+    except ValueError:
+        await call.answer()
+        return
+    if not seat.redirecting or card not in D.can_redirect(game, 0):
+        seat.redirecting = False
+        await call.answer("Перевести этим нельзя.", show_alert=True)
+        await _paint_board(call, seat)
+        return
+    D.apply_redirect(game, 0, card)
+    seat.redirecting = False
+    logger.info("Дурак: %s перевёл атаку", call.from_user.id)
+    await call.answer("Перевёл! Теперь кроется бот.")
+    await _paint_board(call, seat)
+
+
 @durak_router.callback_query(F.data == f"{CB}:done")
 async def cb_done(call: CallbackQuery):
     seat = await _owned(call)
@@ -480,14 +537,26 @@ async def cb_done(call: CallbackQuery):
     if game.attacker != 0 or not game.table:
         await call.answer()
         return
-    # «Бито»: бот отвечает по всему столу разом — кроет всё или берёт всё.
-    if _bot_answer_full(game) == "took":
+    # «Бито»: бот отвечает по всему столу разом. Не может покрыть всё —
+    # переводит (если есть чем), иначе берёт.
+    plan = D.ai_defense_full(game, 1)
+    if plan is None:
+        reds = D.can_redirect(game, 1)
+        if reds:
+            pick = min(reds, key=lambda c: (D.suit_of(c) != game.trump,
+                                            D.rank_of(c)))
+            D.apply_redirect(game, 1, pick)
+            await call.answer("Бот переводит! Отбивайся.")
+            await _paint_board(call, seat)
+            return
         if await _finish_if_over(seat, call):
             await call.answer(_final_line(game))
         else:
             await call.answer("Бот берёт.")
         await _paint_board(call, seat)
         return
+    for att, dfn in plan.items():
+        D.apply_defense(game, 1, att, dfn)
     result = D.resolve_done(game)
     if await _finish_if_over(seat, call):
         await call.answer(_final_line(game))

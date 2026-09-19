@@ -169,6 +169,29 @@ def all_covered(game: Game) -> bool:
     return bool(game.table) and all(dfn is not None for _, dfn in game.table)
 
 
+def can_redirect(game: Game, player: int) -> list[int]:
+    """Чем можно перевести атаку на нападавшего: тот же ранг, что на столе.
+    Только пока ничего не побито — классика переводного."""
+    if game.over or player != defender_of(game) or not game.table:
+        return []
+    if any(dfn is not None for _, dfn in game.table):
+        return []
+    ranks = table_ranks(game)
+    return sorted(
+        (c for c in game.hands[player] if rank_of(c) in ranks),
+        key=lambda c: _sort_key(game.trump, c),
+    )
+
+
+def apply_redirect(game: Game, player: int, card: int) -> None:
+    """Перевод: карта в стол новым нападением, переводящий сам атакует.
+    Лимит захода не обновляем — он тянется с начала захода."""
+    assert card in can_redirect(game, player)
+    game.hands[player].remove(card)
+    game.table.append([card, None])
+    game.attacker = player
+
+
 def _draw_up(game: Game, first: int) -> None:
     for player in (first, 1 - first):
         hand = game.hands[player]
