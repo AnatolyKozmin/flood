@@ -1,11 +1,9 @@
-"""Подкидной дурак с ботом — в личке и во флуде.
+"""Подкидной и переводной дурак с ботом — в личке и во флуде.
 
 Человек (игрок 0) против бота (игрок 1). Свои карты — кнопками, чужие не
-видны. Подкидной + переводной: нападающий докидывает сколько хочет,
-«Бито» — и защитник отвечает сразу по всему столу (кроет всё, берёт всё
-или переводит тем же рангом, пока ничего не побито). Когда отбивается
-человек — он кроет по одной (кнопка «Перевести» — пока стол чистый),
-бот подкидывает ещё.
+видны. Ритм классический: бот кроет каждый подкид сразу; докинул всё —
+«Бито». В переводном режиме отбивающийся может перевести тем же рангом,
+пока ничего не побито (кнопка «Перевести»), бот переводит так же.
 
 Столы: во флуде стол один на всех (пока один не доиграл, второй ждёт),
 в личке у каждого свой — до 50 одновременных. Зависший стол (тишина дольше
@@ -38,6 +36,7 @@ durak_router = Router()
 CB = "dk"
 
 DECKS = (24, 36, 52)
+MODES = {"toss": "Подкидной", "transfer": "Переводной"}
 IDLE_TIMEOUT = 1800  # зависший стол отдаём через полчаса тишины
 MAX_PRIVATE = 50  # столько личек играют одновременно
 THROTTLE_SEC = 1.0  # чаще — игнор: защита от пулемёта по кнопкам и двойных тапов
@@ -52,6 +51,7 @@ class Seat:
     name: str
     display: str
     deck: int
+    mode: str = "toss"  # toss — подкидной, transfer — переводной
     board: tuple[int, int] | None = None  # (chat_id, msg_id) доски
     redirecting: bool = False  # человек выбирает карту для перевода
     last_active: float = field(default_factory=time.monotonic)
@@ -61,6 +61,7 @@ PRIVATE_SEATS: dict[int, Seat] = {}  # tg_id -> стол в личке
 GROUP_SEAT: Seat | None = None  # один стол на все флуды
 BOARDS: dict[int, tuple[int, int]] = {}  # tg_id -> (chat_id, msg_id) доски
 LAST_DECK: dict[int, int] = {}  # tg_id -> размер колоды для кнопки «Ещё»
+LAST_MODE: dict[int, str] = {}  # tg_id -> режим для кнопки «Ещё»
 LAST_TAP: dict[int, float] = {}  # tg_id -> время последнего нажатия (троттлинг)
 _RECORDED: set[int] = set()  # id игр, уже записанных в топ
 
@@ -97,10 +98,18 @@ def _deck_text() -> tuple[str, InlineKeyboardMarkup]:
     return text, kb
 
 
-def _board_text(game: D.Game, display: str, name: str) -> str:
+def _mode_text(deck_size: int) -> tuple[str, InlineKeyboardMarkup]:
+    text = (f"🃏 <b>Дурак-{deck_size}</b>\n" + DIVIDER + "\nПодкидной или же переводной?")
+    kb = _kb([_btn(label, f"m:{deck_size}:{key}") for key, label in MODES.items()])
+    return text, kb
+
+
+def _board_text(seat: Seat) -> str:
+    game = seat.game
     lines = [
-        f"🃏 <b>ИГРА ДУРАК-{game.deck_size}</b>",
-        f"Игрок: {html.escape(display or name)}",
+        f"🃏 <b>ИГРА ДУРАК-{game.deck_size}"
+        f"{' · переводной' if seat.mode == 'transfer' else ''}</b>",
+        f"Игрок: {html.escape(seat.display or seat.name)}",
         f"Козырь: {D.SUIT_EMOJI[game.trump]}",
         f"Колода: {len(game.talon)}",
         f"Бот: {len(game.hands[1])} карт",
@@ -115,11 +124,10 @@ def _board_text(game: D.Game, display: str, name: str) -> str:
         lines += ["", _final_line(game)]
     elif game.attacker == 0:
         if game.table:
-            lines += ["", "Твой ход: докидывай карты и жми «Бито» — "
-                         "бот ответит по всему столу разом."]
+            lines += ["", "Твой ход: подкинь карту или жми «Бито»."]
         else:
             lines += ["", "Твой ход — клади карту."]
-    elif D.can_redirect(game, 0):
+    elif seat.mode == "transfer" and D.can_redirect(game, 0):
         lines += ["", "Отбивайся картой, бери или жми «Перевести»."]
     else:
         lines += ["", "Отбивайся картой или жми «Беру»."]
@@ -134,10 +142,11 @@ def _final_line(game: D.Game) -> str:
     return "🤝 <b>Ничья!</b>"
 
 
-def _board_kb(game: D.Game, redirecting: bool = False) -> InlineKeyboardMarkup:
+def _board_kb(seat: Seat) -> InlineKeyboardMarkup:
+    game = seat.game
     if game.over:
         return _kb([_btn("🔄 Ещё партию", "new")])
-    if redirecting:
+    if seat.redirecting:
         opts = D.can_redirect(game, 0)
         rows = [[_btn(D.card_label(c), f"rc:{c}") for c in opts[i:i + 3]]
                 for i in range(0, len(opts), 3)]
@@ -155,7 +164,7 @@ def _board_kb(game: D.Game, redirecting: bool = False) -> InlineKeyboardMarkup:
         rows.append(actions)
     else:
         actions = [_btn("🫳 Беру", "take")]
-        if D.can_redirect(game, 0):
+        if seat.mode == "transfer" and D.can_redirect(game, 0):
             actions.append(_btn("↪️ Перевести", "redir"))
         actions.append(_btn("🏳️ Сдаться", "giveup"))
         rows.append(actions)
@@ -163,8 +172,8 @@ def _board_kb(game: D.Game, redirecting: bool = False) -> InlineKeyboardMarkup:
 
 
 async def _paint_board(target: Message | CallbackQuery, seat: Seat) -> None:
-    text = _board_text(seat.game, seat.display, seat.name)
-    kb = _board_kb(seat.game, seat.redirecting)
+    text = _board_text(seat)
+    kb = _board_kb(seat)
     message = target if isinstance(target, Message) else target.message
     if isinstance(target, CallbackQuery):
         try:
@@ -199,19 +208,22 @@ def _group_busy_for(user_id: int) -> str | None:
     return GROUP_SEAT.name
 
 
-def _start_game(user_id: int, user, deck_size: int, group: bool) -> Seat:
+def _start_game(user_id: int, user, deck_size: int, mode: str,
+                group: bool) -> Seat:
     """Занять стол и раздать. Проверки — до вызова."""
     global GROUP_SEAT
     game = D.new_game(deck_size=deck_size)
     seat = Seat(game=game, uid=user_id, name=user.full_name,
-                display=_player_display(user), deck=game.deck_size)
+                display=_player_display(user), deck=game.deck_size, mode=mode)
     if group:
         GROUP_SEAT = seat
     else:
         PRIVATE_SEATS[user_id] = seat
     LAST_DECK[user_id] = game.deck_size
-    logger.info("Дурак-%s (%s): партия для %s, первый ходит %s",
-                game.deck_size, "флуд" if group else "личка", user_id,
+    LAST_MODE[user_id] = mode
+    logger.info("Дурак-%s %s (%s): партия для %s, первый ходит %s",
+                game.deck_size, MODES.get(mode, mode),
+                "флуд" if group else "личка", user_id,
                 "человек" if game.attacker == 0 else "бот")
     if game.attacker == 1:
         _bot_lead(game)
@@ -222,6 +234,27 @@ def _bot_lead(game: D.Game) -> None:
     """Бот начинает заход (старт партии или человек взял)."""
     lead = D.ai_lead(game, 1)
     D.apply_attack(game, 1, lead)
+
+
+def _bot_answer_attack(game: D.Game, allow_redirect: bool = False,
+                       ) -> str | None:
+    """Бот отвечает на только что подкинутую карту. 'take' — берёт всё,
+    'redirect' — переводит (только в переводном и пока стол чистый),
+    None — побил, бой продолжается."""
+    att = game.table[-1][0]
+    beater = D.ai_min_beater(game, 1, att)
+    if beater is not None:
+        D.apply_defense(game, 1, att, beater)
+        return None
+    if allow_redirect:
+        reds = D.can_redirect(game, 1)
+        if reds:
+            pick = min(reds, key=lambda c: (D.suit_of(c) != game.trump,
+                                            D.rank_of(c)))
+            D.apply_redirect(game, 1, pick)
+            return "redirect"
+    D.resolve_take(game)
+    return "take"
 
 
 def _bot_toss_or_done(game: D.Game) -> str | None:
@@ -342,21 +375,51 @@ async def cb_deck(call: CallbackQuery):
     if deck_size not in DECKS:
         await call.answer()
         return
+    ok, _ = await _claim(call)
+    if not ok:
+        return
+    await call.answer()
+    text, kb = _mode_text(deck_size)
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramAPIError:
+        pass
+
+
+async def _claim(call: CallbackQuery) -> tuple[bool, bool]:
+    """Стол свободен для звонящего? Возвращает (можно, отобран_у_зависшего).
+    При отказе отвечает сам."""
     group = _is_group_chat(call.message.chat)
     if group:
         busy = _group_busy_for(call.from_user.id)
         if busy:
             await call.answer(f"Стол занят — играет {busy}.", show_alert=True)
-            return
-        took_over = (GROUP_SEAT is not None
-                     and GROUP_SEAT.uid != call.from_user.id)
-    else:
-        _purge_idle_private()
-        uid = call.from_user.id
-        if uid not in PRIVATE_SEATS and len(PRIVATE_SEATS) >= MAX_PRIVATE:
-            await call.answer("Все столы заняты — подожди.", show_alert=True)
-            return
-        took_over = False
+            return False, False
+        return True, (GROUP_SEAT is not None
+                      and GROUP_SEAT.uid != call.from_user.id)
+    _purge_idle_private()
+    uid = call.from_user.id
+    if uid not in PRIVATE_SEATS and len(PRIVATE_SEATS) >= MAX_PRIVATE:
+        await call.answer("Все столы заняты — подожди.", show_alert=True)
+        return False, False
+    return True, False
+
+
+@durak_router.callback_query(F.data.startswith(f"{CB}:m:"))
+async def cb_gamemode(call: CallbackQuery):
+    try:
+        _, _, deck_raw, mode = call.data.split(":")
+        deck_size = int(deck_raw)
+    except ValueError:
+        await call.answer()
+        return
+    if deck_size not in DECKS or mode not in MODES:
+        await call.answer()
+        return
+    ok, took_over = await _claim(call)
+    if not ok:
+        return
+    group = _is_group_chat(call.message.chat)
     old = BOARDS.get(call.from_user.id)
     if old is not None and (old[0], old[1]) != (
             call.message.chat.id, call.message.message_id):
@@ -364,7 +427,8 @@ async def cb_deck(call: CallbackQuery):
             await call.bot.delete_message(old[0], old[1])
         except TelegramAPIError:
             pass
-    seat = _start_game(call.from_user.id, call.from_user, deck_size, group)
+    seat = _start_game(call.from_user.id, call.from_user, deck_size, mode,
+                       group)
     BOARDS[call.from_user.id] = (call.message.chat.id,
                                  call.message.message_id)
     seat.board = BOARDS[call.from_user.id]
@@ -375,41 +439,38 @@ async def cb_deck(call: CallbackQuery):
     if took_over:
         await call.message.answer("Прошлый стол завис — забираю его себе.")
     await call.message.answer(
-        f"{call.from_user.full_name}, новая партия на {game.deck_size}! "
-        f"{first}")
+        f"{call.from_user.full_name}, новая партия на {game.deck_size} "
+        f"({MODES[mode].casefold()})! {first}")
     await _paint_board(call, seat)
 
 
 @durak_router.callback_query(F.data == f"{CB}:new")
 async def cb_new(call: CallbackQuery):
-    group = _is_group_chat(call.message.chat)
-    if group:
-        busy = _group_busy_for(call.from_user.id)
-        if busy:
-            await call.answer(f"Стол занят — играет {busy}.", show_alert=True)
-            return
-    else:
-        _purge_idle_private()
-        uid = call.from_user.id
-        if uid not in PRIVATE_SEATS and len(PRIVATE_SEATS) >= MAX_PRIVATE:
-            await call.answer("Все столы заняты — подожди.", show_alert=True)
-            return
+    ok, _ = await _claim(call)
+    if not ok:
+        return
     deck_size = LAST_DECK.get(call.from_user.id)
+    mode = LAST_MODE.get(call.from_user.id)
     if deck_size is None:
         text, kb = _deck_text()
+    elif mode is None or mode not in MODES:
+        text, kb = _mode_text(deck_size)
+    else:
         await call.answer()
-        try:
-            await call.message.edit_text(text, reply_markup=kb,
-                                         parse_mode="HTML")
-        except TelegramAPIError:
-            pass
+        group = _is_group_chat(call.message.chat)
+        seat = _start_game(call.from_user.id, call.from_user, deck_size,
+                           mode, group)
+        BOARDS[call.from_user.id] = (call.message.chat.id,
+                                     call.message.message_id)
+        seat.board = BOARDS[call.from_user.id]
+        await _paint_board(call, seat)
         return
     await call.answer()
-    seat = _start_game(call.from_user.id, call.from_user, deck_size, group)
-    BOARDS[call.from_user.id] = (call.message.chat.id,
-                                 call.message.message_id)
-    seat.board = BOARDS[call.from_user.id]
-    await _paint_board(call, seat)
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramAPIError:
+        pass
+    return
 
 
 @durak_router.callback_query(F.data == f"{CB}:giveup")
@@ -442,14 +503,23 @@ async def cb_card(call: CallbackQuery):
         return
 
     if game.attacker == 0:
-        # Человек нападает/подкидывает — карта просто ложится на стол.
-        # Бот ответит разом, когда человек нажмёт «Бито».
+        # Человек нападает/подкидывает — бот тут же кроет. В переводном,
+        # если крыть нечем, бот переводит тем же рангом вместо «беру».
         if card not in D.legal_attacks(game, 0):
             await call.answer("Так подкинуть нельзя: нужен ранг со стола.",
                               show_alert=True)
             return
         D.apply_attack(game, 0, card)
-        await call.answer()
+        took = _bot_answer_attack(game,
+                                  seat.mode == "transfer")
+        if took == "redirect":
+            await call.answer("Бот переводит! Отбивайся.")
+            await _paint_board(call, seat)
+            return
+        if await _finish_if_over(seat, call):
+            await call.answer(_final_line(game))
+        else:
+            await call.answer("Бот берёт." if took else "Побито.")
         await _paint_board(call, seat)
         return
 
@@ -486,7 +556,8 @@ async def cb_redir(call: CallbackQuery):
     seat = await _owned(call)
     if seat is None:
         return
-    if seat.game.attacker == 0 or not D.can_redirect(seat.game, 0):
+    if seat.mode != "transfer" or seat.game.attacker == 0 \
+            or not D.can_redirect(seat.game, 0):
         await call.answer()
         await _paint_board(call, seat)
         return
@@ -516,7 +587,8 @@ async def cb_rc(call: CallbackQuery):
     except ValueError:
         await call.answer()
         return
-    if not seat.redirecting or card not in D.can_redirect(game, 0):
+    if seat.mode != "transfer" or not seat.redirecting \
+            or card not in D.can_redirect(game, 0):
         seat.redirecting = False
         await call.answer("Перевести этим нельзя.", show_alert=True)
         await _paint_board(call, seat)
@@ -537,34 +609,22 @@ async def cb_done(call: CallbackQuery):
     if game.attacker != 0 or not game.table:
         await call.answer()
         return
-    # «Бито»: бот отвечает по всему столу разом. Не может покрыть всё —
-    # переводит (если есть чем), иначе берёт.
-    plan = D.ai_defense_full(game, 1)
-    if plan is None:
-        reds = D.can_redirect(game, 1)
-        if reds:
-            pick = min(reds, key=lambda c: (D.suit_of(c) != game.trump,
-                                            D.rank_of(c)))
-            D.apply_redirect(game, 1, pick)
-            await call.answer("Бот переводит! Отбивайся.")
+    # После твоего перевода на столе непокрытое — бот отвечает сначала
+    # на него (кроет или берёт), потом уже отбой.
+    while D.uncovered(game):
+        if _bot_answer_attack(game, allow_redirect=False) == "take":
+            if await _finish_if_over(seat, call):
+                await call.answer(_final_line(game))
+            else:
+                await call.answer("Бот берёт.")
             await _paint_board(call, seat)
             return
-        if await _finish_if_over(seat, call):
-            await call.answer(_final_line(game))
-        else:
-            await call.answer("Бот берёт.")
-        await _paint_board(call, seat)
-        return
-    for att, dfn in plan.items():
-        D.apply_defense(game, 1, att, dfn)
-    covers = ", ".join(f"{D.card_label(a)}→{D.card_label(d)}"
-                       for a, d in plan.items())
     result = D.resolve_done(game)
     if await _finish_if_over(seat, call):
-        await call.answer(f"Бот побил: {covers}. {_final_line(game)}")
+        await call.answer(_final_line(game))
     else:
         _bot_lead(game)
-        await call.answer(f"Бито! Бот побил: {covers}. Бот ходит.")
+        await call.answer("Бито! Бот ходит.")
     await _paint_board(call, seat)
 
 
