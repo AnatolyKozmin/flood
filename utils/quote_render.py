@@ -38,16 +38,21 @@ async def quote_avatar(bot: Bot, quote) -> Image.Image | None:
 
 
 async def render_one(bot: Bot, quote, loop) -> io.BytesIO:
-    """Одна карточка PNG. Длинную цитату ужимаем в одну страницу:
-    в топе и батле многостраничность только мешает."""
+    """Одна карточка PNG. Длинную цитату ужимаем мелким кеглем в одну
+    страницу: в топе и батле многостраничность только мешает. Совсем
+    невпихуемое — обрезаем с многоточием, топ падать не должен."""
     author = await quote_author(quote)
     avatar = await quote_avatar(bot, quote)
-    pages = await loop.run_in_executor(
-        None,
-        lambda: render_quote_pages(
-            quote.text_of_quotes, author, avatar=avatar, max_pages_hint=1
-        ),
-    )
+
+    def _render(text: str) -> list:
+        return render_quote_pages(
+            text, author, avatar=avatar, max_pages_hint=1)
+
+    try:
+        pages = await loop.run_in_executor(None, lambda: _render(quote.text_of_quotes))
+    except ValueError:
+        short = " ".join((quote.text_of_quotes or "").split())[:500].rstrip() + "…"
+        pages = await loop.run_in_executor(None, lambda: _render(short))
     return pages[0]
 
 

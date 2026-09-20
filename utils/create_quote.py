@@ -374,11 +374,13 @@ def render_quote_pages(
     max_pages_hint: int | None = None,
 ) -> list[io.BytesIO]:
     """
-    Одна или несколько плашек PNG. Первая страница начинается с «, последняя заканчивается ».
+    Всегда одна плашка PNG: длинная цитата не плодит страницы, а ужимается
+    меньшим кеглем (вплоть до минимального). Первая страница начинается
+    с «, последняя заканчивается » — при одной странице это одна и та же.
 
-    max_pages_hint: если передан и после выбора кегля страниц всё ещё больше —
-    пробуются меньшие размеры шрифта, пока всё поместится (или упираемся в минимальный кегль).
-    Если None — количество страниц не ограничивают (бот потом режет альбомами по 10).
+    max_pages_hint оставлен для совместимости и всегда сводится к 1.
+    Если не влезло даже мелким кеглем — ValueError, вызывающий пусть
+    ответит человеку по-человечески, а не роняет хендлер.
     """
     if not _TEMPLATE_PATH.is_file():
         raise FileNotFoundError(
@@ -404,7 +406,7 @@ def render_quote_pages(
     pages_specs: list[tuple[str, bool, bool]] = []
 
     # Сначала крупный шрифт; если страниц не влезает в подсказку — уменьшаем кегль.
-    for body_sz in range(42, 11, -2):
+    for body_sz in range(42, 7, -2):
         body_font = _load_font(body_sz)
         inner_wrap_w = max(120, max_w - _GU_MEASURE_PADDING)
         pages_try = _paginate_inner_simple(
@@ -419,13 +421,19 @@ def render_quote_pages(
             continue
         chosen_font = body_font
         pages_specs = pages_try
-        if max_pages_hint is None or len(pages_try) <= max_pages_hint:
+        if len(pages_try) <= (max_pages_hint or 1):
             break
 
     if not pages_specs:
         raise ValueError(
             "Цитату нельзя отрисовать: одно из слов слишком длинное для строки или "
             "нужно увеличить область текста."
+        )
+    if len(pages_specs) > 1:
+        # Длиннее одного экрана даже мелким кеглем — второй фотки не будет,
+        # пусть вызывающий скажет человеку ужать текст.
+        raise ValueError(
+            "Цитата не умещается на одну плашку даже мелким шрифтом."
         )
 
     bufs: list[io.BytesIO] = []

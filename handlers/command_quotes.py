@@ -165,21 +165,29 @@ async def _build_and_send(message: Message, tg_id: str, tg_username: str,
             return None
         return await load_user_profile_avatar(message.bot, avatar_uid)
 
-    async def _db_ops():
+    async def _db_lookup():
         async with async_session_maker() as session:
-            activist = await ActivistsDAO(session).get_by_username(tg_username)
-            quote = await QuotesDAO(session).create(
-                tg_id=tg_id, tg_username=tg_username, text_of_quotes=text_body
-            )
-        return activist, quote
+            return await ActivistsDAO(session).get_by_username(tg_username)
 
-    (activist, quote), avatar = await asyncio.gather(_db_ops(), _avatar())
+    activist, avatar = await asyncio.gather(_db_lookup(), _avatar())
 
     image_author = first_last(activist.fio) if activist else tg_username
     loop = asyncio.get_event_loop()
-    pngs = await loop.run_in_executor(
-        None, lambda: render_quote_pages(text_body, image_author, avatar=avatar)
-    )
+    try:
+        pngs = await loop.run_in_executor(
+            None, lambda: render_quote_pages(text_body, image_author, avatar=avatar)
+        )
+    except ValueError:
+        # Сначала рисуем, потом сохраняем: слишком длинное не пишем в базу.
+        await message.reply(
+            "Цитата слишком длинная — не влезает на одну картинку даже "
+            "мелким шрифтом. Ужми текст.")
+        return
+
+    async with async_session_maker() as session:
+        quote = await QuotesDAO(session).create(
+            tg_id=tg_id, tg_username=tg_username, text_of_quotes=text_body
+        )
     await _send_quote_pngs(message, pngs, caption_html=caption_html, quote_id=quote.id)
 
 
@@ -320,7 +328,13 @@ async def random_wisdom(message: Message):
 
     image_author = first_last(activist.fio) if activist else (tg_username_clean or "чат")
     loop = asyncio.get_event_loop()
-    pngs = await loop.run_in_executor(
-        None, lambda: render_quote_pages(q.text_of_quotes, image_author, avatar=avatar)
-    )
+    try:
+        pngs = await loop.run_in_executor(
+            None, lambda: render_quote_pages(q.text_of_quotes, image_author, avatar=avatar)
+        )
+    except ValueError:
+        await message.reply(
+            "Эта цитата слишком длинная — не влезает на одну картинку даже "
+            "мелким шрифтом.")
+        return
     await _send_quote_pngs(message, pngs, quote_id=q.id, votes=votes)
