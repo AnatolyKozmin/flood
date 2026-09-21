@@ -239,7 +239,8 @@ def _bot_lead(game: D.Game) -> None:
 def _bot_answer_attack(game: D.Game, allow_redirect: bool = False,
                        ) -> str | None:
     """Бот отвечает на последнюю непокрытую карту: 'take' — берёт всё,
-    'redirect' — переводит (только в переводном),
+    'redirect' — переводит (только в переводном и только пока стол чистый:
+    бот играет по классике и не переводит посреди отбоя),
     None — побил, бой продолжается. Некого крыть — тоже None."""
     open_rows = [att for att, dfn in game.table if dfn is None]
     if not open_rows:
@@ -249,7 +250,7 @@ def _bot_answer_attack(game: D.Game, allow_redirect: bool = False,
     if beater is not None:
         D.apply_defense(game, 1, att, beater)
         return None
-    if allow_redirect:
+    if allow_redirect and len(open_rows) == len(game.table):
         reds = D.can_redirect(game, 1)
         if reds:
             pick = min(reds, key=lambda c: (D.suit_of(c) != game.trump,
