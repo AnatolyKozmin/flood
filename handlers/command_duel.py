@@ -45,6 +45,11 @@ MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 ROULETTE_DEATH_CHANCE = 1 / 6
 
+# Подкрутка: Хафизова Милана выигрывает дуэли всегда. Смотрим по id,
+# когда узнаем (надёжно), пока — по тегу (сменит тег — сказать мне).
+MILANA_TAGS = {"milana00_00"}
+MILANA_IDS: set[int] = set()
+
 SHALNAYA_HIT_CHANCE = 1 / 2
 # Шальная — штука громкая, поэтому не чаще раза в полчаса на чат.
 SHALNAYA_COOLDOWN_SECONDS = 30 * 60
@@ -106,6 +111,12 @@ async def _plain_name(
 
 def _me(user) -> tuple[int, str, str]:
     return user.id, user.username or "", user.full_name or ""
+
+
+def _is_milana(user_id: int, username: str | None) -> bool:
+    if user_id in MILANA_IDS:
+        return True
+    return (username or "").strip().lstrip("@").casefold() in MILANA_TAGS
 
 
 async def _resolve_target(message: Message) -> tuple[int, str, str] | None:
@@ -184,8 +195,15 @@ async def duel_cmd(message: Message):
             )
             return
 
-        # Победитель случаен: пасть может и вызвавший.
-        if random.random() < 0.5:
+        # Победитель случаен: пасть может и вызвавший. Кроме Миланы —
+        # она выигрывает всегда, в любую сторону.
+        milana_target = _is_milana(target_id, target_tag)
+        milana_me = _is_milana(me_id, me_tag)
+        if milana_target and not milana_me:
+            loser, winner = (me_id, me_tag, me_name), (target_id, target_tag, target_name)
+        elif milana_me and not milana_target:
+            loser, winner = (target_id, target_tag, target_name), (me_id, me_tag, me_name)
+        elif random.random() < 0.5:
             loser, winner = (target_id, target_tag, target_name), (me_id, me_tag, me_name)
         else:
             loser, winner = (me_id, me_tag, me_name), (target_id, target_tag, target_name)
