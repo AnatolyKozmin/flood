@@ -22,6 +22,7 @@ from database.candle_dao import CandleDAO
 from database.engine import async_session_maker
 from utils.format import DIVIDER
 from utils.helpers import moscow_today
+from utils.names import display_name
 
 logger = logging.getLogger(__name__)
 
@@ -188,11 +189,12 @@ async def cb_save(call: CallbackQuery):
         await _show(call, uid)
         return
     day = _today()
+    tag = (call.from_user.username or "").lstrip("@")
     async with async_session_maker() as session:
+        display = await display_name(session, uid, tag,
+                                     call.from_user.full_name)
         result = await CandleDAO(session).light(
-            day, pending, uid,
-            (call.from_user.username or "").lstrip("@"),
-            call.from_user.full_name,
+            day, pending, uid, tag, display,
         )
     if result == "already":
         PENDING.pop(uid, None)

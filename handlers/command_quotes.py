@@ -7,12 +7,12 @@ from aiogram import F, Router
 from aiogram.filters import BaseFilter
 from aiogram.types import BufferedInputFile, InputMediaPhoto, Message
 
-from database.dao import ActivistsDAO, QuotesDAO
+from database.dao import QuotesDAO
 from database.quotes_extra_dao import VotesDAO
 from database.engine import async_session_maker
 from utils.create_quote import render_quote_pages
-from utils.helpers import first_last
 from handlers.command_quotes_top import vote_kb
+from utils.names import fio_name
 from utils.telegram_avatar import load_user_profile_avatar
 from utils import voice_transcribe
 
@@ -167,11 +167,11 @@ async def _build_and_send(message: Message, tg_id: str, tg_username: str,
 
     async def _db_lookup():
         async with async_session_maker() as session:
-            return await ActivistsDAO(session).get_by_username(tg_username)
+            return await fio_name(session, avatar_uid, tg_username)
 
-    activist, avatar = await asyncio.gather(_db_lookup(), _avatar())
-
-    image_author = first_last(activist.fio) if activist else tg_username
+    image_author, avatar = await asyncio.gather(_db_lookup(), _avatar())
+    if not image_author:
+        image_author = tg_username
     loop = asyncio.get_event_loop()
     try:
         pngs = await loop.run_in_executor(
@@ -314,10 +314,8 @@ async def random_wisdom(message: Message):
         uid = None
 
     async def _get_activist():
-        if not tg_username_clean:
-            return None
         async with async_session_maker() as session:
-            return await ActivistsDAO(session).get_by_username(tg_username_clean)
+            return await fio_name(session, uid, tg_username_clean)
 
     async def _get_avatar():
         if uid is None:
@@ -326,7 +324,7 @@ async def random_wisdom(message: Message):
 
     activist, avatar = await asyncio.gather(_get_activist(), _get_avatar())
 
-    image_author = first_last(activist.fio) if activist else (tg_username_clean or "чат")
+    image_author = activist or (tg_username_clean or "чат")
     loop = asyncio.get_event_loop()
     try:
         pngs = await loop.run_in_executor(

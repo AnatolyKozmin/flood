@@ -9,6 +9,7 @@ from database.engine import async_session_maker
 from database.models import Activists
 from utils.helpers import mention, format_activist
 from utils.format import DIVIDER, field, format_phone
+from utils.names import activist_by_tg_id
 from utils.stats import activist_stats_line
 
 
@@ -105,13 +106,19 @@ async def info_cmd(message: Message):
         if author.username:
             query = author.username
         else:
-            name = html.escape(author.full_name)
-            await message.reply(
-                f"У {name} нет @username — по нему не найти. "
-                "Попробуй по фамилии: <code>!инфо Фамилия</code>",
-                parse_mode="HTML",
-            )
-            return
+            # Профиль скрыт: ищем анкету по tg_id, дальше — по ФИО.
+            async with async_session_maker() as session:
+                activist = await activist_by_tg_id(session, author.id)
+            if activist is not None and activist.fio:
+                query = activist.fio
+            else:
+                name = html.escape(author.full_name)
+                await message.reply(
+                    f"У {name} нет @username и анкеты по id — не найти. "
+                    "Попробуй по фамилии: <code>!инфо Фамилия</code>",
+                    parse_mode="HTML",
+                )
+                return
 
     if not query:
         await message.reply(

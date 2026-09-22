@@ -28,6 +28,7 @@ from database.engine import async_session_maker
 from database.quotes_extra_dao import BATTLE_ROUNDS, BattleDAO
 from database.stats_dao import StatsDAO
 from utils.format import DIVIDER
+from utils.names import display_name
 from utils.quote_render import quote_author, render_one, stack
 from utils.stats import plural
 
@@ -180,12 +181,10 @@ async def battle_cmd(message: Message):
         if active is not None:
             users = await StatsDAO(session).users([active.user_id])
             found = users.get(active.user_id)
-            if found is not None and found.username:
-                who = f"@{found.username.lstrip('@')}"
-            elif found is not None and found.full_name:
-                who = html.escape(found.full_name)
-            else:
-                who = "Кто-то"
+            tag = (found.username or "") if found else ""
+            name = (found.full_name or "") if found else ""
+            who = html.escape(await display_name(
+                session, active.user_id, tag, name))
             if active.user_id == message.from_user.id:
                 await message.reply(
                     "Ты уже делаешь батл — жми кнопки на картинке выше 👆"

@@ -19,6 +19,7 @@ from database.engine import async_session_maker
 from database.kalik_dao import KalikDAO
 from utils.format import DIVIDER
 from utils.helpers import msk_now
+from utils.names import display_name
 from utils.stats import plural
 
 kalik_router = Router()
@@ -62,10 +63,11 @@ async def kalik_cmd(message: Message):
                 return
             await dao.reset(message.chat.id)
         hit = random.randint(1, 10)
+        username = (message.from_user.username or "").lstrip("@")
+        display = await display_name(session, uid, username,
+                                     message.from_user.full_name)
         personal, total = await dao.puff(
-            message.chat.id, uid,
-            (message.from_user.username or "").lstrip("@"),
-            message.from_user.full_name, hit,
+            message.chat.id, uid, username, display, hit,
         )
         if total >= RELOAD_AT:
             solo = await dao.contributors(message.chat.id) == [uid]

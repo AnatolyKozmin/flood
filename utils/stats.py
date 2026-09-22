@@ -6,7 +6,6 @@ from database.models import Activists
 from database.stats_dao import StatsDAO
 from middlewares.message_counter import flush_stats
 from utils.format import field
-from utils.helpers import first_last
 
 # Узкий пробел: '1 234' читается лучше, чем '1234', и не ломает вёрстку в телеге.
 _THIN_SPACE = " "
@@ -25,43 +24,24 @@ def plural(value: int, one: str, few: str, many: str) -> str:
     return many
 
 
-def _activist_name(activist) -> str:
-    return first_last(activist.fio) if activist and activist.fio else ""
-
-
-async def fio_by_username(session) -> dict[str, str]:
-    """{'тег в нижнем регистре': 'Имя Фамилия'} по всей базе активистов.
-
-    В базе теги записаны вразнобой (где-то с '@', где-то нет, разный
-    регистр) — приводим к одному виду, иначе половина людей в топе
-    останется с ником вместо имени.
-    """
-    activists = (await session.execute(select(Activists))).scalars().all()
-    out: dict[str, str] = {}
-    for activist in activists:
-        key = (activist.tg_username or "").strip().lstrip("@").casefold()
-        name = _activist_name(activist)
-        if key and name:
-            out.setdefault(key, name)
-    return out
-
-
 async def build_names(session, user_ids: list[int]) -> dict[int, str]:
-    """Имя для каждого user_id: ФИО из базы актива → имя из телеги → @тег."""
+    """Имя для каждого user_id: ФИО из базы актива (сначала по tg_id,
+    потом по тегу — скрытые профили тоже находятся) → имя из телеги → @тег."""
+    from utils.names import fio_name
+
     stats_users = await StatsDAO(session).users(user_ids)
-    by_username = await fio_by_username(session)
 
     names: dict[int, str] = {}
     for user_id in user_ids:
         user = stats_users.get(user_id)
-        username = (user.username or "").strip().lstrip("@").casefold() if user else ""
-        fio = by_username.get(username) if username else None
+        username = (user.username or "").strip().lstrip("@") if user else ""
+        fio = await fio_name(session, user_id, username)
         if fio:
             names[user_id] = fio
         elif user and user.full_name:
             names[user_id] = user.full_name
-        elif user and user.username:
-            names[user_id] = f"@{user.username}"
+        elif username:
+            names[user_id] = f"@{username}"
         else:
             names[user_id] = f"id{user_id}"
     return names
@@ -87,22 +67,34 @@ async def find_activists(session, query: str) -> list:
 async def activist_stats_line(chat_id: int, activist) -> str | None:
     """Строка «💬 Сообщений: 1 234 · 3-е место» для карточки !инфо.
 
-    None, если у активиста нет тега, он ни разу не писал в этом чате или
-    команду позвали не в группе.
+    None, если человек ни разу не писал в этом чате или команду позвали
+    не в группе. Тег не обязателен: скрытого находим через привязку анкеты.
     """
     username = (activist.tg_username or "").strip().lstrip("@")
-    if not username:
-        return None
 
     await flush_stats()
     async with async_session_maker() as session:
         dao = StatsDAO(session)
-        user = await dao.user_by_username(username)
+        user = await dao.user_by_username(username) if username else None
         if user is None:
-            return None
+            user_id = await _tg_id_by_activist(session, activist.id)
+            if user_id is None:
+                return None
+        else:
+            user_id = user.user_id
         board = await dao.leaderboard(chat_id)
 
-    for place, (user_id, count) in enumerate(board, start=1):
-        if user_id == user.user_id:
+    for place, (uid, count) in enumerate(board, start=1):
+        if uid == user_id:
             return field("Сообщений", f"{fmt_num(count)} · {place}-е место", "💬")
     return None
+
+
+async def _tg_id_by_activist(session, activist_id: int) -> int | None:
+    """tg_id по привязке анкеты — для скрытых профилей без @тега."""
+    from database.profile_models import ActivistLink
+
+    link = (await session.execute(
+        select(ActivistLink).where(ActivistLink.activist_id == activist_id)
+    )).scalars().first()
+    return int(link.tg_id) if link is not None else None

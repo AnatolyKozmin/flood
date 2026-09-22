@@ -20,14 +20,14 @@ from aiogram import Router
 from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
-from database.dao import ActivistsDAO
 from database.duel_dao import DuelDAO, FLAG_TTL
 from database.engine import async_session_maker
 from database.stats_dao import StatsDAO
 from middlewares.message_counter import flush_stats
 from datetime import timedelta
 from utils.format import DIVIDER
-from utils.helpers import first_last, msk_now
+from utils.helpers import msk_now
+from utils.names import display_name
 from utils.stats import plural
 
 duel_router = Router()
@@ -97,16 +97,11 @@ def _who(user_id: int, username: str | None, display: str | None) -> str:
 async def _plain_name(
     session, user_id: int, username: str | None, display: str | None
 ) -> str:
-    """Имя без тега и без ссылки — «Имя Фамилия» из базы актива,
+    """Имя без тега и без ссылки — «Фамилия Имя» из базы актива,
     иначе имя из телеграма. Для списков (!мирные, !кладбище, флаги),
-    где пинговать никого не надо."""
-    tag = (username or "").strip().lstrip("@")
-    if tag:
-        activist = await ActivistsDAO(session).get_by_username(tag)
-        if activist and activist.fio:
-            return html.escape(first_last(activist.fio))
-    base = (display or "").strip() or tag
-    return html.escape(base or "боец")
+    где пинговать никого не надо. Ищем по tg_id, потом по тегу —
+    скрытые профили без @тега тоже находятся."""
+    return html.escape(await display_name(session, user_id, username, display))
 
 
 def _me(user) -> tuple[int, str, str]:

@@ -26,7 +26,9 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
+from database.engine import async_session_maker
 from utils import seabattle as S
+from utils.names import fio_name
 
 logger = logging.getLogger(__name__)
 
@@ -247,10 +249,12 @@ async def _drop_messages(bot, seat: Seat) -> None:
 
 
 async def _new_seat(user, group: bool, auto: bool) -> Seat:
-    """Создать стол. Проверки занятости — до вызова."""
+    """Создать стол. Проверки занятости — до вызова. Имя — из базы."""
     global GROUP_SEAT
+    async with async_session_maker() as session:
+        fio = await fio_name(session, user.id, user.username or "")
     seat = Seat(
-        uid=user.id, name=user.full_name,
+        uid=user.id, name=fio or user.full_name,
         player=S.Board(), enemy=S.Board(), hunter=S.Hunter(),
     )
     if auto:

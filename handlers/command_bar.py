@@ -19,6 +19,7 @@ from database.bar_dao import BarDAO
 from database.engine import async_session_maker
 from utils.format import DIVIDER
 from utils.helpers import msk_now
+from utils.names import display_name
 from utils.stats import plural
 
 bar_router = Router()
@@ -62,10 +63,11 @@ async def bar_cmd(message: Message):
                 return
             await dao.reset(message.chat.id)
         shot = random.randint(1, 10)
+        username = (message.from_user.username or "").lstrip("@")
+        display = await display_name(session, uid, username,
+                                     message.from_user.full_name)
         personal, total = await dao.pour(
-            message.chat.id, uid,
-            (message.from_user.username or "").lstrip("@"),
-            message.from_user.full_name, shot,
+            message.chat.id, uid, username, display, shot,
         )
         if total >= EMPTY_AT:
             solo = await dao.contributors(message.chat.id) == [uid]

@@ -9,10 +9,9 @@ import io
 from PIL import Image
 from aiogram import Bot
 
-from database.dao import ActivistsDAO
 from database.engine import async_session_maker
 from utils.create_quote import render_quote_pages
-from utils.helpers import first_last
+from utils.names import fio_name
 from utils.telegram_avatar import load_user_profile_avatar
 
 # Отступ между двумя цитатами на картинке батла.
@@ -20,13 +19,18 @@ _GAP = 18
 
 
 async def quote_author(quote) -> str:
-    """ФИО из базы актива, иначе @тег, иначе «чат»."""
-    tag = quote.tg_username.lstrip("@") if quote.tg_username else None
-    if not tag:
-        return "чат"
+    """ФИО из базы актива (сначала по tg_id — скрытые профили тоже),
+    иначе @тег, иначе «чат»."""
+    try:
+        uid = int(quote.tg_id)
+    except (TypeError, ValueError):
+        uid = None
     async with async_session_maker() as session:
-        activist = await ActivistsDAO(session).get_by_username(tag)
-    return first_last(activist.fio) if activist and activist.fio else tag
+        name = await fio_name(session, uid, quote.tg_username)
+    if name:
+        return name
+    tag = (quote.tg_username or "").lstrip("@")
+    return tag or "чат"
 
 
 async def quote_avatar(bot: Bot, quote) -> Image.Image | None:

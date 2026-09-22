@@ -29,6 +29,7 @@ from database.durak_dao import DurakDAO
 from database.engine import async_session_maker
 from utils import durak as D
 from utils.format import DIVIDER
+from utils.names import display_name, fio_name
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +185,11 @@ async def _paint_board(target: Message | CallbackQuery, seat: Seat) -> None:
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-def _player_display(user) -> str:
-    """«Фамилия Имя» для шапки доски."""
+async def _player_display(session, user) -> str:
+    """«Фамилия Имя» для шапки доски: сначала база, потом телеграм."""
+    name = await fio_name(session, user.id, user.username or "")
+    if name:
+        return name
     fio = f"{user.last_name or ''} {user.first_name or ''}".strip()
     return fio or user.full_name
 
@@ -208,13 +212,15 @@ def _group_busy_for(user_id: int) -> str | None:
     return GROUP_SEAT.name
 
 
-def _start_game(user_id: int, user, deck_size: int, mode: str,
-                group: bool) -> Seat:
+async def _start_game(user_id: int, user, deck_size: int, mode: str,
+                      group: bool) -> Seat:
     """Занять стол и раздать. Проверки — до вызова."""
     global GROUP_SEAT
     game = D.new_game(deck_size=deck_size)
+    async with async_session_maker() as session:
+        display = await _player_display(session, user)
     seat = Seat(game=game, uid=user_id, name=user.full_name,
-                display=_player_display(user), deck=game.deck_size, mode=mode)
+                display=display, deck=game.deck_size, mode=mode)
     if group:
         GROUP_SEAT = seat
     else:
@@ -319,8 +325,10 @@ async def _finish_if_over(seat: Seat, user: Message | CallbackQuery) -> bool:
             outcome = "win" if game.winner == 0 else "loss"
         try:
             async with async_session_maker() as session:
+                display = await display_name(
+                    session, uid, tag, user.from_user.full_name)
                 await DurakDAO(session).record(
-                    uid, tag, user.from_user.full_name, outcome)
+                    uid, tag, display, outcome)
         except Exception:
             logger.exception("Дурак: не записал итог %s", uid)
     if _is_group_chat(user.chat if isinstance(user, Message) else user.message.chat):
@@ -431,8 +439,8 @@ async def cb_gamemode(call: CallbackQuery):
             await call.bot.delete_message(old[0], old[1])
         except TelegramAPIError:
             pass
-    seat = _start_game(call.from_user.id, call.from_user, deck_size, mode,
-                       group)
+    seat = await _start_game(call.from_user.id, call.from_user, deck_size,
+                             mode, group)
     BOARDS[call.from_user.id] = (call.message.chat.id,
                                  call.message.message_id)
     seat.board = BOARDS[call.from_user.id]
@@ -462,8 +470,8 @@ async def cb_new(call: CallbackQuery):
     else:
         await call.answer()
         group = _is_group_chat(call.message.chat)
-        seat = _start_game(call.from_user.id, call.from_user, deck_size,
-                           mode, group)
+        seat = await _start_game(call.from_user.id, call.from_user, deck_size,
+                                 mode, group)
         BOARDS[call.from_user.id] = (call.message.chat.id,
                                      call.message.message_id)
         seat.board = BOARDS[call.from_user.id]
