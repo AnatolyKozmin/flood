@@ -14,5 +14,7 @@ database/*.safe
 database/*.db-wal
 database/*.db-shm
 database/*.db-journal
+# Кэш аватарок для цитат: перекачивается сам, в репозиторий не надо.
+database/avatars/
 # Кэш модели whisper (качается один раз на сервере, ~150МБ).
 whisper-cache/

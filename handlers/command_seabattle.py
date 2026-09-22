@@ -587,6 +587,11 @@ async def cb_giveup(call: CallbackQuery):
 @seabattle_router.callback_query(F.data == f"{CB}:new")
 async def cb_new(call: CallbackQuery):
     uid = call.from_user.id
+    now = time.monotonic()
+    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+        await call.answer()  # даблтап при лаге не плодит столы
+        return
+    LAST_TAP[uid] = now
     group = _is_group_chat(call.message.chat)
     if group:
         busy = _group_busy_for(uid)

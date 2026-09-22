@@ -277,6 +277,16 @@ def _bot_toss_or_done(game: D.Game) -> str | None:
     return D.resolve_done(game)
 
 
+def _tap_ok(uid: int) -> bool:
+    """Можно ли принять нажатие: не чаще THROTTLE_SEC. Проверка и запись
+    идут без await между — двойной тап при лаге не пролезет дважды."""
+    now = time.monotonic()
+    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+        return False
+    LAST_TAP[uid] = now
+    return True
+
+
 async def _owned(call: CallbackQuery) -> Seat | None:
     """Стол звонящего: чужой — «стол занят», без партии — «начни с !дурак»,
     со старой доски — «доска устарела». Пулемёт режем молча."""
@@ -300,11 +310,9 @@ async def _owned(call: CallbackQuery) -> Seat | None:
         await call.answer("Доска устарела — играй на новой.",
                           show_alert=True)
         return None
-    now = time.monotonic()
-    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+    if not _tap_ok(uid):
         await call.answer()
         return None
-    LAST_TAP[uid] = now
     seat.last_active = now
     return seat
 
@@ -379,6 +387,9 @@ async def pokertop_cmd(message: Message):
 
 @durak_router.callback_query(F.data.startswith(f"{CB}:deck:"))
 async def cb_deck(call: CallbackQuery):
+    if not _tap_ok(call.from_user.id):
+        await call.answer()  # лаг + даблтап больше не плодят партии
+        return
     try:
         deck_size = int(call.data.split(":")[-1])
     except ValueError:
@@ -419,6 +430,9 @@ async def _claim(call: CallbackQuery) -> tuple[bool, bool]:
 
 @durak_router.callback_query(F.data.startswith(f"{CB}:m:"))
 async def cb_gamemode(call: CallbackQuery):
+    if not _tap_ok(call.from_user.id):
+        await call.answer()
+        return
     try:
         _, _, deck_raw, mode = call.data.split(":")
         deck_size = int(deck_raw)
@@ -458,6 +472,9 @@ async def cb_gamemode(call: CallbackQuery):
 
 @durak_router.callback_query(F.data == f"{CB}:new")
 async def cb_new(call: CallbackQuery):
+    if not _tap_ok(call.from_user.id):
+        await call.answer()
+        return
     ok, _ = await _claim(call)
     if not ok:
         return
