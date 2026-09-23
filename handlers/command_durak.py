@@ -63,7 +63,7 @@ GROUP_SEAT: Seat | None = None  # один стол на все флуды
 BOARDS: dict[int, tuple[int, int]] = {}  # tg_id -> (chat_id, msg_id) доски
 LAST_DECK: dict[int, int] = {}  # tg_id -> размер колоды для кнопки «Ещё»
 LAST_MODE: dict[int, str] = {}  # tg_id -> режим для кнопки «Ещё»
-LAST_TAP: dict[int, float] = {}  # tg_id -> время последнего нажатия (троттлинг)
+LAST_TAP: dict[int, tuple[float, str]] = {}  # tg_id -> (время, callback)
 _RECORDED: set[int] = set()  # id игр, уже записанных в топ
 
 
@@ -277,13 +277,16 @@ def _bot_toss_or_done(game: D.Game) -> str | None:
     return D.resolve_done(game)
 
 
-def _tap_ok(uid: int) -> bool:
-    """Можно ли принять нажатие: не чаще THROTTLE_SEC. Проверка и запись
-    идут без await между — двойной тап при лаге не пролезет дважды."""
+def _tap_ok(uid: int, data: str) -> bool:
+    """Анти-даблтап: режем только ПОВТОР того же нажатия в окно THROTTLE_SEC.
+    Разные действия подряд (карта → «Бито» → «Ещё») проходят всегда — глухой
+    троттлинг всех тапов морозил игру: второе действие за секунду глохло
+    молча. Проверка и запись атомарны (без await между)."""
     now = time.monotonic()
-    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+    last = LAST_TAP.get(uid)
+    if last is not None and last[1] == data and now - last[0] < THROTTLE_SEC:
         return False
-    LAST_TAP[uid] = now
+    LAST_TAP[uid] = (now, data)
     return True
 
 
@@ -310,10 +313,10 @@ async def _owned(call: CallbackQuery) -> Seat | None:
         await call.answer("Доска устарела — играй на новой.",
                           show_alert=True)
         return None
-    if not _tap_ok(uid):
+    if not _tap_ok(uid, call.data):
         await call.answer()
         return None
-    seat.last_active = now
+    seat.last_active = time.monotonic()
     return seat
 
 
@@ -387,7 +390,7 @@ async def pokertop_cmd(message: Message):
 
 @durak_router.callback_query(F.data.startswith(f"{CB}:deck:"))
 async def cb_deck(call: CallbackQuery):
-    if not _tap_ok(call.from_user.id):
+    if not _tap_ok(call.from_user.id, call.data):
         await call.answer()  # лаг + даблтап больше не плодят партии
         return
     try:
@@ -430,7 +433,7 @@ async def _claim(call: CallbackQuery) -> tuple[bool, bool]:
 
 @durak_router.callback_query(F.data.startswith(f"{CB}:m:"))
 async def cb_gamemode(call: CallbackQuery):
-    if not _tap_ok(call.from_user.id):
+    if not _tap_ok(call.from_user.id, call.data):
         await call.answer()
         return
     try:
@@ -472,7 +475,7 @@ async def cb_gamemode(call: CallbackQuery):
 
 @durak_router.callback_query(F.data == f"{CB}:new")
 async def cb_new(call: CallbackQuery):
-    if not _tap_ok(call.from_user.id):
+    if not _tap_ok(call.from_user.id, call.data):
         await call.answer()
         return
     ok, _ = await _claim(call)

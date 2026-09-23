@@ -61,7 +61,18 @@ class Seat:
 
 PRIVATE_SEATS: dict[int, Seat] = {}
 GROUP_SEAT: Seat | None = None
-LAST_TAP: dict[int, float] = {}
+LAST_TAP: dict[int, tuple[float, str]] = {}
+
+
+def _tap_ok(uid: int, data: str) -> bool:
+    """Анти-даблтап: режем только ПОВТОР того же нажатия в окно THROTTLE_SEC.
+    Разные действия подряд проходят всегда (как в дураке)."""
+    now = time.monotonic()
+    last = LAST_TAP.get(uid)
+    if last is not None and last[1] == data and now - last[0] < THROTTLE_SEC:
+        return False
+    LAST_TAP[uid] = (now, data)
+    return True
 CHOICE: dict[int, tuple[int, int]] = {}  # tg_id -> (chat, msg) выбора режима
 
 
@@ -305,12 +316,10 @@ async def _owned(call: CallbackQuery) -> Seat | None:
             await call.answer("Партии нет — начни с !морскойбой.",
                               show_alert=True)
             return None
-    now = time.monotonic()
-    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+    if not _tap_ok(uid, call.data):
         await call.answer()
         return None
-    LAST_TAP[uid] = now
-    seat.last_active = now
+    seat.last_active = time.monotonic()
     return seat
 
 
@@ -347,11 +356,9 @@ async def seabattle_cmd(message: Message):
 @seabattle_router.callback_query(F.data.startswith(f"{CB}:mode:"))
 async def cb_mode(call: CallbackQuery):
     uid = call.from_user.id
-    now = time.monotonic()
-    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+    if not _tap_ok(uid, call.data):
         await call.answer()  # двойной тап по «Сам/Авто» — игнор
         return
-    LAST_TAP[uid] = now
     auto = call.data.split(":")[-1] == "auto"
     group = _is_group_chat(call.message.chat)
     if group:
@@ -587,11 +594,9 @@ async def cb_giveup(call: CallbackQuery):
 @seabattle_router.callback_query(F.data == f"{CB}:new")
 async def cb_new(call: CallbackQuery):
     uid = call.from_user.id
-    now = time.monotonic()
-    if now - LAST_TAP.get(uid, 0.0) < THROTTLE_SEC:
+    if not _tap_ok(uid, call.data):
         await call.answer()  # даблтап при лаге не плодит столы
         return
-    LAST_TAP[uid] = now
     group = _is_group_chat(call.message.chat)
     if group:
         busy = _group_busy_for(uid)

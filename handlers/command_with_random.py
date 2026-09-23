@@ -46,7 +46,7 @@ def _lived_days(birthday, today) -> int:
     return max(0, (today - born).days)
 
 
-@random_router.message(F.text.startswith('!жызуха'))
+@random_router.message(F.text.startswith('!жызуха') | F.text.startswith('!жизуха'))
 async def lifespan_cmd(message: Message):
     arg = message.text.strip()[len('!жызуха'):].strip()
     reply = message.reply_to_message
