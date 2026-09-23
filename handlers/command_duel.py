@@ -50,6 +50,10 @@ ROULETTE_DEATH_CHANCE = 1 / 6
 MILANA_TAGS = {"milana00_00"}
 MILANA_IDS: set[int] = set()
 
+# Неубиваемые: убить их нельзя никак. Пусто — заполнишь, скажи кого.
+UNKILLABLE_TAGS: set[str] = set()
+UNKILLABLE_IDS: set[int] = set()
+
 SHALNAYA_HIT_CHANCE = 1 / 2
 # Шальная — штука громкая, поэтому не чаще раза в полчаса на чат.
 SHALNAYA_COOLDOWN_SECONDS = 30 * 60
@@ -112,6 +116,39 @@ def _is_milana(user_id: int, username: str | None) -> bool:
     if user_id in MILANA_IDS:
         return True
     return (username or "").strip().lstrip("@").casefold() in MILANA_TAGS
+
+
+def _is_unkillable(user_id: int, username: str | None) -> bool:
+    if user_id in UNKILLABLE_IDS:
+        return True
+    return (username or "").strip().lstrip("@").casefold() in UNKILLABLE_TAGS
+
+
+def _decide_winner(target: tuple[int, str, str], me: tuple[int, str, str],
+                   ) -> tuple[tuple[int, str, str], tuple[int, str, str]] | None:
+    """(проигравший, победитель) или None — дуэли не будет.
+
+    Порядок абсолютен: сначала неубиваемость (обоих нельзя — отказ,
+    один — умирает второй), потом подкрутка Миланы, потом монетка.
+    Неубиваемый бьёт даже Милану: «нельзя убить» сильнее «всегда wins».
+    """
+    unk_target = _is_unkillable(target[0], target[1])
+    unk_me = _is_unkillable(me[0], me[1])
+    if unk_target and unk_me:
+        return None
+    if unk_target and not unk_me:
+        return me, target
+    if unk_me and not unk_target:
+        return target, me
+    milana_target = _is_milana(target[0], target[1])
+    milana_me = _is_milana(me[0], me[1])
+    if milana_target and not milana_me:
+        return me, target
+    if milana_me and not milana_target:
+        return target, me
+    if random.random() < 0.5:
+        return target, me
+    return me, target
 
 
 async def _resolve_target(message: Message) -> tuple[int, str, str] | None:
@@ -191,17 +228,14 @@ async def duel_cmd(message: Message):
             return
 
         # Победитель случаен: пасть может и вызвавший. Кроме Миланы —
-        # она выигрывает всегда, в любую сторону.
-        milana_target = _is_milana(target_id, target_tag)
-        milana_me = _is_milana(me_id, me_tag)
-        if milana_target and not milana_me:
-            loser, winner = (me_id, me_tag, me_name), (target_id, target_tag, target_name)
-        elif milana_me and not milana_target:
-            loser, winner = (target_id, target_tag, target_name), (me_id, me_tag, me_name)
-        elif random.random() < 0.5:
-            loser, winner = (target_id, target_tag, target_name), (me_id, me_tag, me_name)
-        else:
-            loser, winner = (me_id, me_tag, me_name), (target_id, target_tag, target_name)
+        # она выигрывает всегда, в любую сторону. И кроме неубиваемых —
+        # их убить нельзя, обоих сразу — дуэли не будет.
+        decided = _decide_winner(
+            (target_id, target_tag, target_name), (me_id, me_tag, me_name))
+        if decided is None:
+            await message.reply("Вы оба бессмертны — дуэли не будет.")
+            return
+        loser, winner = decided
         await dao.kill(message.chat.id, loser[0], loser[1], loser[2])
         await dao.record_duel(message.chat.id, winner, loser)
 
