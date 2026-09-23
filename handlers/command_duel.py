@@ -50,9 +50,9 @@ ROULETTE_DEATH_CHANCE = 1 / 6
 MILANA_TAGS = {"milana00_00"}
 MILANA_IDS: set[int] = set()
 
-SHALNAYA_HIT_CHANCE = 1 / 2
-# Шальная — штука громкая, поэтому не чаще раза в полчаса на чат.
-SHALNAYA_COOLDOWN_SECONDS = 30 * 60
+SHALNAYA_HIT_CHANCE = 3 / 4
+# Шальная — штука громкая, поэтому не чаще раза в 15 минут на чат.
+SHALNAYA_COOLDOWN_SECONDS = 15 * 60
 _last_shalnaya: dict[int, float] = {}
 
 GROUP_ONLY = "Эта команда для группового чата — дуэли во флуде 🙂"
