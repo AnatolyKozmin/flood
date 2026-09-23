@@ -420,7 +420,7 @@ async def top_duelists(message: Message):
                     f"{plural(total, 'победа', 'победы', 'побед')}"
                 )
         if losers:
-            lines.append("💀 <b>Чаще проигрывают:</b>")
+            lines += ["", "💀 <b>Чаще проигрывают:</b>"]
             for place, row in enumerate(losers, start=1):
                 total = row.duel_losses + row.roulette_losses
                 name = await _plain_name(
