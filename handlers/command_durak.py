@@ -654,7 +654,15 @@ async def cb_rc(call: CallbackQuery):
     D.apply_redirect(game, 0, card)
     seat.redirecting = False
     logger.info("Дурак: %s перевёл атаку", call.from_user.id)
-    await call.answer("Перевёл! Теперь кроется бот.")
+    # Бот отвечает на перевод сразу, как на обычный подкид, — иначе
+    # переведённая карта висит без ответа и ход «возвращается» без толку.
+    took = _bot_answer_attack(game, seat.mode == "transfer")
+    if took == "redirect":
+        await call.answer("Бот переводит! Отбивайся.")
+    elif await _finish_if_over(seat, call):
+        await call.answer(_final_line(game))
+    else:
+        await call.answer("Перевёл! Бот покрыл." if not took else "Бот берёт.")
     await _paint_board(call, seat)
 
 
