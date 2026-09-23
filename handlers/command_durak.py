@@ -2,8 +2,7 @@
 
 Человек (игрок 0) против бота (игрок 1). Свои карты — кнопками, чужие не
 видны. Ритм классический: бот кроет каждый подкид сразу; докинул всё —
-«Бито». В переводном режиме отбивающийся может перевести непокрытую карту
-тем же рангом (кнопка «Перевести»), бот переводит так же.
+«Бито». Переводной отключён, код перевода дремлет до лучших времён.
 
 Столы: во флуде стол один на всех (пока один не доиграл, второй ждёт),
 в личке у каждого свой — до 50 одновременных. Зависший стол (тишина дольше
@@ -37,7 +36,6 @@ durak_router = Router()
 CB = "dk"
 
 DECKS = (24, 36, 52)
-MODES = {"toss": "Подкидной", "transfer": "Переводной"}
 IDLE_TIMEOUT = 1800  # зависший стол отдаём через полчаса тишины
 MAX_PRIVATE = 50  # столько личек играют одновременно
 THROTTLE_SEC = 1.0  # чаще — игнор: защита от пулемёта по кнопкам и двойных тапов
@@ -62,7 +60,6 @@ PRIVATE_SEATS: dict[int, Seat] = {}  # tg_id -> стол в личке
 GROUP_SEAT: Seat | None = None  # один стол на все флуды
 BOARDS: dict[int, tuple[int, int]] = {}  # tg_id -> (chat_id, msg_id) доски
 LAST_DECK: dict[int, int] = {}  # tg_id -> размер колоды для кнопки «Ещё»
-LAST_MODE: dict[int, str] = {}  # tg_id -> режим для кнопки «Ещё»
 LAST_TAP: dict[int, tuple[float, str]] = {}  # tg_id -> (время, callback)
 _RECORDED: set[int] = set()  # id игр, уже записанных в топ
 
@@ -103,12 +100,6 @@ def _hand_label(game: D.Game, card: int) -> str:
 def _deck_text() -> tuple[str, InlineKeyboardMarkup]:
     text = "🃏 <b>Дурак</b>\n" + DIVIDER + "\nСколько карт в колоде?"
     kb = _kb([_btn(str(n), f"deck:{n}") for n in DECKS])
-    return text, kb
-
-
-def _mode_text(deck_size: int) -> tuple[str, InlineKeyboardMarkup]:
-    text = (f"🃏 <b>Дурак-{deck_size}</b>\n" + DIVIDER + "\nПодкидной или же переводной?")
-    kb = _kb([_btn(label, f"m:{deck_size}:{key}") for key, label in MODES.items()])
     return text, kb
 
 
@@ -229,23 +220,22 @@ def _group_busy_for(user_id: int) -> str | None:
     return GROUP_SEAT.name
 
 
-async def _start_game(user_id: int, user, deck_size: int, mode: str,
+async def _start_game(user_id: int, user, deck_size: int,
                       group: bool) -> Seat:
-    """Занять стол и раздать. Проверки — до вызова."""
+    """Занять стол и раздать. Только подкидной. Проверки — до вызова."""
     global GROUP_SEAT
     game = D.new_game(deck_size=deck_size)
     async with async_session_maker() as session:
         display = await _player_display(session, user)
     seat = Seat(game=game, uid=user_id, name=user.full_name,
-                display=display, deck=game.deck_size, mode=mode)
+                display=display, deck=game.deck_size, mode="toss")
     if group:
         GROUP_SEAT = seat
     else:
         PRIVATE_SEATS[user_id] = seat
     LAST_DECK[user_id] = game.deck_size
-    LAST_MODE[user_id] = mode
-    logger.info("Дурак-%s %s (%s): партия для %s, первый ходит %s",
-                game.deck_size, MODES.get(mode, mode),
+    logger.info("Дурак-%s (%s): партия для %s, первый ходит %s",
+                game.deck_size,
                 "флуд" if group else "личка", user_id,
                 "человек" if game.attacker == 0 else "бот")
     if game.attacker == 1:
@@ -418,15 +408,32 @@ async def cb_deck(call: CallbackQuery):
     if deck_size not in DECKS:
         await call.answer()
         return
-    ok, _ = await _claim(call)
+    ok, took_over = await _claim(call)
     if not ok:
         return
+    group = _is_group_chat(call.message.chat)
+    old = BOARDS.get(call.from_user.id)
+    if old is not None and (old[0], old[1]) != (
+            call.message.chat.id, call.message.message_id):
+        try:
+            await call.bot.delete_message(old[0], old[1])
+        except TelegramAPIError:
+            pass
+    seat = await _start_game(call.from_user.id, call.from_user, deck_size,
+                             group)
+    BOARDS[call.from_user.id] = (call.message.chat.id,
+                                 call.message.message_id)
+    seat.board = BOARDS[call.from_user.id]
+    game = seat.game
+    first = ("Первым ходишь ты (младший козырь у тебя)."
+             if game.attacker == 0 else "Первым ходит бот.")
     await call.answer()
-    text, kb = _mode_text(deck_size)
-    try:
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except TelegramAPIError:
-        pass
+    if took_over:
+        await call.message.answer("Прошлый стол завис — забираю его себе.")
+    await call.message.answer(
+        f"{call.from_user.full_name}, новая партия на {game.deck_size}! "
+        f"{first}")
+    await _paint_board(call, seat)
 
 
 async def _claim(call: CallbackQuery) -> tuple[bool, bool]:
@@ -447,49 +454,6 @@ async def _claim(call: CallbackQuery) -> tuple[bool, bool]:
         return False, False
     return True, False
 
-
-@durak_router.callback_query(F.data.startswith(f"{CB}:m:"))
-async def cb_gamemode(call: CallbackQuery):
-    if not _tap_ok(call.from_user.id, call.data):
-        await call.answer()
-        return
-    try:
-        _, _, deck_raw, mode = call.data.split(":")
-        deck_size = int(deck_raw)
-    except ValueError:
-        await call.answer()
-        return
-    if deck_size not in DECKS or mode not in MODES:
-        await call.answer()
-        return
-    ok, took_over = await _claim(call)
-    if not ok:
-        return
-    group = _is_group_chat(call.message.chat)
-    old = BOARDS.get(call.from_user.id)
-    if old is not None and (old[0], old[1]) != (
-            call.message.chat.id, call.message.message_id):
-        try:
-            await call.bot.delete_message(old[0], old[1])
-        except TelegramAPIError:
-            pass
-    seat = await _start_game(call.from_user.id, call.from_user, deck_size,
-                             mode, group)
-    BOARDS[call.from_user.id] = (call.message.chat.id,
-                                 call.message.message_id)
-    seat.board = BOARDS[call.from_user.id]
-    game = seat.game
-    first = ("Первым ходишь ты (младший козырь у тебя)."
-             if game.attacker == 0 else "Первым ходит бот.")
-    await call.answer()
-    if took_over:
-        await call.message.answer("Прошлый стол завис — забираю его себе.")
-    await call.message.answer(
-        f"{call.from_user.full_name}, новая партия на {game.deck_size} "
-        f"({MODES[mode].casefold()})! {first}")
-    await _paint_board(call, seat)
-
-
 @durak_router.callback_query(F.data == f"{CB}:new")
 async def cb_new(call: CallbackQuery):
     if not _tap_ok(call.from_user.id, call.data):
@@ -499,26 +463,23 @@ async def cb_new(call: CallbackQuery):
     if not ok:
         return
     deck_size = LAST_DECK.get(call.from_user.id)
-    mode = LAST_MODE.get(call.from_user.id)
     if deck_size is None:
         text, kb = _deck_text()
-    elif mode is None or mode not in MODES:
-        text, kb = _mode_text(deck_size)
-    else:
         await call.answer()
-        group = _is_group_chat(call.message.chat)
-        seat = await _start_game(call.from_user.id, call.from_user, deck_size,
-                                 mode, group)
-        BOARDS[call.from_user.id] = (call.message.chat.id,
-                                     call.message.message_id)
-        seat.board = BOARDS[call.from_user.id]
-        await _paint_board(call, seat)
+        try:
+            await call.message.edit_text(text, reply_markup=kb,
+                                         parse_mode="HTML")
+        except TelegramAPIError:
+            pass
         return
     await call.answer()
-    try:
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except TelegramAPIError:
-        pass
+    group = _is_group_chat(call.message.chat)
+    seat = await _start_game(call.from_user.id, call.from_user, deck_size,
+                             group)
+    BOARDS[call.from_user.id] = (call.message.chat.id,
+                                 call.message.message_id)
+    seat.board = BOARDS[call.from_user.id]
+    await _paint_board(call, seat)
     return
 
 
