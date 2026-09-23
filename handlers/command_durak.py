@@ -93,6 +93,13 @@ def _sorted_hand(game: D.Game, player: int) -> list[int]:
     return sorted(game.hands[player], key=lambda c: (D.suit_of(c), D.rank_of(c)))
 
 
+def _hand_label(game: D.Game, card: int) -> str:
+    """Кнопка карты: козырную масть помечаем ★ — масти в кнопках
+    различаются плохо, а козырь видеть надо сразу."""
+    label = D.card_label(card)
+    return f"★{label}" if D.suit_of(card) == game.trump else label
+
+
 def _deck_text() -> tuple[str, InlineKeyboardMarkup]:
     text = "🃏 <b>Дурак</b>\n" + DIVIDER + "\nСколько карт в колоде?"
     kb = _kb([_btn(str(n), f"deck:{n}") for n in DECKS])
@@ -121,6 +128,8 @@ def _board_text(seat: Seat) -> str:
         for att, dfn in game.table:
             right = D.card_label(dfn) if dfn is not None else "<i>?</i>"
             lines.append(f"{D.card_label(att)} → {right}")
+    if not game.over:
+        lines += ["", "★ — козырь."]
     if game.over:
         lines += ["", _final_line(game)]
     elif game.attacker == 0:
@@ -149,14 +158,14 @@ def _board_kb(seat: Seat) -> InlineKeyboardMarkup:
         return _kb([_btn("🔄 Ещё партию", "new")])
     if seat.redirecting:
         opts = D.can_redirect(game, 0)
-        rows = [[_btn(D.card_label(c), f"rc:{c}") for c in opts[i:i + 3]]
+        rows = [[_btn(_hand_label(game, c), f"rc:{c}") for c in opts[i:i + 3]]
                 for i in range(0, len(opts), 3)]
         rows.append([_btn("↩️ Отмена", "redirx")])
         return _kb(*rows)
     rows: list[list[InlineKeyboardButton]] = []
     hand = _sorted_hand(game, 0)
     for i in range(0, len(hand), 3):
-        rows.append([_btn(D.card_label(c), f"c:{c}") for c in hand[i:i + 3]])
+        rows.append([_btn(_hand_label(game, c), f"c:{c}") for c in hand[i:i + 3]])
     if game.attacker == 0:
         actions = []
         if game.table:
@@ -182,7 +191,15 @@ async def _paint_board(target: Message | CallbackQuery, seat: Seat) -> None:
             return
         except TelegramAPIError:
             pass
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    if isinstance(target, CallbackQuery):
+        # Правка не удалась (например, «сообщение не изменилось») и доска
+        # ушла новым сообщением: привязать кнопки к нему, иначе живая доска
+        # не совпадёт с BOARDS и все тапы отвалятся «доска устарела».
+        uid = target.from_user.id
+        BOARDS[uid] = (sent.chat.id, sent.message_id)
+        if seat.uid == uid:
+            seat.board = BOARDS[uid]
 
 
 async def _player_display(session, user) -> str:
@@ -530,8 +547,9 @@ async def cb_card(call: CallbackQuery):
         await call.answer()
         return
     if card not in game.hands[0]:
+        # Карты уже нет в руке — доска не менялась, перерисовывать нечего
+        # (правка без изменений роняет дубликат доски).
         await call.answer("Этой карты у тебя уже нет.", show_alert=True)
-        await _paint_board(call, seat)
         return
 
     if game.attacker == 0:
@@ -565,6 +583,7 @@ async def cb_card(call: CallbackQuery):
         None,
     )
     if target is None:
+        # Промах мимо стола — доска не менялась, не перерисовываем.
         if seat.mode == "transfer" and card in D.can_redirect(game, 0):
             await call.answer(
                 f"{D.card_label(card)} не бьёт, но годится для перевода — "
@@ -597,8 +616,8 @@ async def cb_redir(call: CallbackQuery):
         return
     if seat.mode != "transfer" or seat.game.attacker == 0 \
             or not D.can_redirect(seat.game, 0):
+        # Перевести нечего — доска не менялась, не перерисовываем.
         await call.answer()
-        await _paint_board(call, seat)
         return
     seat.redirecting = True
     await call.answer("Чем переводишь?")
