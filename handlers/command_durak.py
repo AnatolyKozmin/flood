@@ -654,15 +654,35 @@ async def cb_rc(call: CallbackQuery):
     D.apply_redirect(game, 0, card)
     seat.redirecting = False
     logger.info("Дурак: %s перевёл атаку", call.from_user.id)
-    # Бот отвечает на перевод сразу, как на обычный подкид, — иначе
-    # переведённая карта висит без ответа и ход «возвращается» без толку.
-    took = _bot_answer_attack(game, seat.mode == "transfer")
-    if took == "redirect":
+    # Бот отвечает сразу на ВЕСЬ стол (как на «Бито»): кроет всё, берёт всё
+    # или переводит обратно. Иначе старые непокрытые зависают без ответа.
+    plan = D.ai_defense_full(game, 1)
+    if plan is not None:
+        for att, dfn in plan.items():
+            D.apply_defense(game, 1, att, dfn)
+        covers = ", ".join(f"{D.card_label(a)}→{D.card_label(d)}"
+                           for a, d in plan.items())
+        result = D.resolve_done(game)
+        if await _finish_if_over(seat, call):
+            await call.answer(f"Перевёл! Бот побил: {covers}. {_final_line(game)}")
+        else:
+            _bot_lead(game)
+            await call.answer(f"Перевёл! Бот побил: {covers}. Бот ходит.")
+        await _paint_board(call, seat)
+        return
+    reds = D.can_redirect(game, 1)
+    if reds and all(dfn is None for _, dfn in game.table):
+        pick = min(reds, key=lambda c: (D.suit_of(c) != game.trump,
+                                        D.rank_of(c)))
+        D.apply_redirect(game, 1, pick)
         await call.answer("Бот переводит! Отбивайся.")
-    elif await _finish_if_over(seat, call):
+        await _paint_board(call, seat)
+        return
+    D.resolve_take(game)
+    if await _finish_if_over(seat, call):
         await call.answer(_final_line(game))
     else:
-        await call.answer("Перевёл! Бот покрыл." if not took else "Бот берёт.")
+        await call.answer("Бот берёт.")
     await _paint_board(call, seat)
 
 
