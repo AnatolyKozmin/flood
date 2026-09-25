@@ -324,8 +324,8 @@ async def save_quote(message: Message):
 @quotes_router.message(FirstWord("/цитата"))
 async def chain_quote(message: Message):
     """Новая /цитата (не правит !цитата): склеивает всю цепочку ответов
-    до корневого сообщения через пробел и приписывает первому человеку:
-    «Имя: я обожаю, когда мне сосут хуй и лижут яйца»."""
+    до корневого сообщения через пробел. Автор для картинки и базы —
+    корневой, в текст имя не пишем (оно и так в подписи)."""
     if not message.reply_to_message:
         await message.reply(
             "Ответь /цитата на сообщение в цепочке — склею все ответы до корня.")
@@ -343,16 +343,7 @@ async def chain_quote(message: Message):
         await message.reply("Не могу определить автора корневого сообщения.")
         return
 
-    try:
-        avatar_uid = int(tg_id)
-    except (ValueError, TypeError):
-        avatar_uid = None
-    async with async_session_maker() as session:
-        image_author = await fio_name(session, avatar_uid, tg_username)
-    if not image_author:
-        image_author = tg_username
-
-    text_body = f"{image_author}: {' '.join(parts)}"
+    text_body = " ".join(parts)
     await _build_and_send(message, tg_id, tg_username, text_body)
 
 
