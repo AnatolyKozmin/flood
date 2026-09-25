@@ -30,6 +30,7 @@ TOP_CMD = "!топ"
 STATS_CMD = "!стата"
 STATS_ALIASES = ("!стата", "!статистика")
 
+TOP_LIMIT = 10
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 # Сколько дней назад начинается период. None — за всё время.
@@ -137,18 +138,31 @@ async def top_cmd(message: Message):
 
     total = sum(count for _, count in board)
     lines = [f"🏆 <b>Топ болтунов</b> — {title}", DIVIDER]
-    for place, (user_id, count) in enumerate(board, start=1):
-        name = html.escape(names[user_id])
-        lines.append(f"{_place(place)} {name} — {fmt_num(count)} · {_share(count, total)}")
-
+    shown = [(uid, count, html.escape(names[uid])) for uid, count in board]
     if days_back is None:
-        # Молчуны — в конец топа за всё время, по фамилии А-Я.
+        # Молчуны — в общий пул, дальше режем топ-10 как обычно.
         silent = await _silent_activists(session, [uid for uid, _ in board])
-        for i, (_, name) in enumerate(silent, start=len(board) + 1):
-            lines.append(f"{i}. {html.escape(name)} — 0")
+        shown += [(None, 0, html.escape(name)) for _, name in silent]
+    shown = shown[:TOP_LIMIT]
+    for i, (uid, count, name) in enumerate(shown, start=1):
+        if count:
+            lines.append(f"{_place(i)} {name} — {fmt_num(count)} · {_share(count, total)}")
+        else:
+            lines.append(f"{i}. {name} — 0")
 
     lines += ["", f"Всего {_msgs(total)} от {len(board)} "
                    f"{plural(len(board), 'человека', 'человек', 'человек')}"]
+
+    # Своё место — если сам не попал в десятку (считаем по всем 53).
+    author = message.from_user
+    if author is not None:
+        if author.id in [uid for uid, _ in board]:
+            my_place = next(i for i, (uid, _) in enumerate(board, start=1) if uid == author.id)
+            my_count = next(n for uid, n in board if uid == author.id)
+        else:
+            my_place, my_count = await _my_silent_place(session, author.id, board)
+        if my_place is not None and my_place > TOP_LIMIT:
+            lines.append(f"Ты на {my_place}-м месте — {fmt_num(my_count)}")
 
     if first_day:
         lines.append(f"<i>Считаю с {first_day.strftime('%d.%m.%Y')} — историю чата бот не видит</i>")
@@ -199,6 +213,18 @@ async def _activist_id_of(session, user_id: int) -> int | None:
     """activist_id по привязке tg_id — для молчунов из актива."""
     link = await session.get(ActivistLink, int(user_id))
     return int(link.activist_id) if link is not None else None
+
+
+async def _my_silent_place(session, user_id: int, board) -> tuple[int | None, int]:
+    """Место молчуна в общем пуле — для строки «ты на N месте»."""
+    aid = await _activist_id_of(session, user_id)
+    if aid is None:
+        return None, 0
+    silent = await _silent_activists(session, [uid for uid, _ in board])
+    for i, (a, _) in enumerate(silent, start=len(board) + 1):
+        if a == aid:
+            return i, 0
+    return None, 0
 
 
 async def _target_user_id(message: Message, query: str,
