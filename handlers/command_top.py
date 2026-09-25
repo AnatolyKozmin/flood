@@ -11,11 +11,16 @@ from aiogram import Router
 from aiogram.filters import BaseFilter
 from aiogram.types import Message
 
+from sqlalchemy import select
+
 from database.engine import async_session_maker
+from database.models import Activists
+from database.profile_models import ActivistLink
+from database.profile_models import ActivistLink
 from database.stats_dao import StatsDAO
 from middlewares.message_counter import flush_stats
 from utils.format import DIVIDER
-from utils.helpers import moscow_today
+from utils.helpers import first_last, moscow_today
 from utils.stats import build_names, find_activists, fmt_num, plural
 
 
@@ -25,7 +30,6 @@ TOP_CMD = "!топ"
 STATS_CMD = "!стата"
 STATS_ALIASES = ("!стата", "!статистика")
 
-TOP_LIMIT = 10
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 # Сколько дней назад начинается период. None — за всё время.
@@ -113,6 +117,7 @@ async def top_cmd(message: Message):
 
     days_back, title = period
     await flush_stats()  # чтобы в топе были и сообщения последних секунд
+    bot_id = message.bot.id
     async with async_session_maker() as session:
         dao = StatsDAO(session)
         if _is_group(message):
@@ -123,28 +128,27 @@ async def top_cmd(message: Message):
             if chat_id is None:
                 await message.reply("Пока нечего показывать — бот ещё нигде не считал.")
                 return
-        board = await dao.leaderboard(chat_id, _since(days_back))
+        board = await _writers_board(session, chat_id, bot_id, _since(days_back))
         if not board:
             await message.reply(f"Пока нечего показывать — сообщений {title} я не насчитал.")
             return
-        names = await build_names(session, [user_id for user_id, _ in board[:TOP_LIMIT]])
+        names = await build_names(session, [user_id for user_id, _ in board])
         first_day = await dao.first_day(chat_id) if days_back is None else None
 
     total = sum(count for _, count in board)
     lines = [f"🏆 <b>Топ болтунов</b> — {title}", DIVIDER]
-    for place, (user_id, count) in enumerate(board[:TOP_LIMIT], start=1):
+    for place, (user_id, count) in enumerate(board, start=1):
         name = html.escape(names[user_id])
         lines.append(f"{_place(place)} {name} — {fmt_num(count)} · {_share(count, total)}")
 
-    lines += ["", f"Всего {_msgs(total)} от {len(board)} "
-                  f"{plural(len(board), 'человека', 'человек', 'человек')}"]
+    if days_back is None:
+        # Молчуны — в конец топа за всё время, по фамилии А-Я.
+        silent = await _silent_activists(session, [uid for uid, _ in board])
+        for i, (_, name) in enumerate(silent, start=len(board) + 1):
+            lines.append(f"{i}. {html.escape(name)} — 0")
 
-    # Своё место — если сам не попал в десятку.
-    author = message.from_user
-    if author is not None:
-        mine = next(((p, n) for p, (uid, n) in enumerate(board, start=1) if uid == author.id), None)
-        if mine and mine[0] > TOP_LIMIT:
-            lines.append(f"Ты на {mine[0]}-м месте — {fmt_num(mine[1])}")
+    lines += ["", f"Всего {_msgs(total)} от {len(board)} "
+                   f"{plural(len(board), 'человека', 'человек', 'человек')}"]
 
     if first_day:
         lines.append(f"<i>Считаю с {first_day.strftime('%d.%m.%Y')} — историю чата бот не видит</i>")
@@ -152,33 +156,85 @@ async def top_cmd(message: Message):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-async def _target_user_id(message: Message, query: str) -> tuple[int | None, str | None]:
-    """Кого показываем: (user_id, текст ошибки).
+async def _writers_board(session, chat_id: int, bot_id: int | None,
+                        since=None) -> list[tuple[int, int]]:
+    """Писавшие чата без бота: бот в рейтинг и подсчёт не входит."""
+    dao = StatsDAO(session)
+    board = await dao.leaderboard(chat_id, since)
+    if bot_id is None:
+        return board
+    return [(uid, n) for uid, n in board if uid != bot_id]
+
+
+async def _silent_activists(session, board_uids: list[int],
+                            ) -> list[tuple[int, str]]:
+    """Актив без сообщений: [(activist_id, 'Имя Фамилия')], по фамилии А-Я.
+
+    Молчун — кого нет ни по привязке tg_id, ни по тегу среди писавших.
+    """
+    uids = set(board_uids)
+    links = list((await session.execute(select(ActivistLink))).scalars().all())
+    linked = {link.activist_id for link in links if link.tg_id in uids}
+    users = await StatsDAO(session).users(board_uids)
+    tags = {(u.username or "").strip().lstrip("@").casefold()
+            for u in users.values() if u.username}
+    activists = (await session.execute(
+        select(Activists).where(Activists.is_active.is_(True))
+    )).scalars().all()
+    out = []
+    for activist in activists:
+        if activist.id in linked:
+            continue
+        tag = (activist.tg_username or "").strip().lstrip("@").casefold()
+        if tag and tag in tags:
+            continue
+        fio = (activist.fio or "").strip()
+        if fio:
+            out.append((activist.id, first_last(fio)))
+    out.sort(key=lambda item: item[1].split()[-1].casefold())
+    return out
+
+
+async def _activist_id_of(session, user_id: int) -> int | None:
+    """activist_id по привязке tg_id — для молчунов из актива."""
+    link = await session.get(ActivistLink, int(user_id))
+    return int(link.activist_id) if link is not None else None
+
+
+async def _target_user_id(message: Message, query: str,
+                          ) -> tuple[int | None, str | None, object | None]:
+    """Кого показываем: (user_id, текст ошибки, активист-молчун).
 
     По порядку: явный запрос (@тег или фамилия) → автор сообщения, на которое
-    ответили → сам автор команды.
+    ответили → сам автор команды. Нашли активиста, но он ни разу не писал —
+    отдаём его третьим полем, чтобы показать нули и место.
     """
     if query:
         async with async_session_maker() as session:
             dao = StatsDAO(session)
             user = await dao.user_by_username(query)
             if user:
-                return user.user_id, None
+                return user.user_id, None, None
             # Не нашли по тегу — вдруг это фамилия из базы актива.
             activists = await find_activists(session, query)
+            fallback = None
             for activist in activists:
                 tag = (activist.tg_username or "").strip().lstrip("@")
                 if tag and (found := await dao.user_by_username(tag)):
-                    return found.user_id, None
+                    return found.user_id, None, None
+                if fallback is None:
+                    fallback = activist
+            if fallback is not None:
+                return None, None, fallback
         clean = html.escape(query.lstrip("@"))
-        return None, f"Не нашёл «{clean}» среди тех, кто писал в чат при мне."
+        return None, f"Не нашёл «{clean}» среди тех, кто писал в чат при мне.", None
 
     reply = message.reply_to_message
     if reply and reply.from_user and not reply.from_user.is_bot:
-        return reply.from_user.id, None
+        return reply.from_user.id, None, None
     if message.from_user:
-        return message.from_user.id, None
-    return None, "Не могу понять, чью статистику показывать."
+        return message.from_user.id, None, None
+    return None, "Не могу понять, чью статистику показывать.", None
 
 
 @top_router.message(FirstWord(*STATS_ALIASES))
@@ -187,11 +243,12 @@ async def stats_cmd(message: Message):
     query = _args(message, command)
 
     await flush_stats()
-    user_id, error = await _target_user_id(message, query)
+    user_id, error, silent_activist = await _target_user_id(message, query)
     if error:
         await message.reply(error)
         return
 
+    bot_id = message.bot.id
     async with async_session_maker() as session:
         dao = StatsDAO(session)
         if _is_group(message):
@@ -206,19 +263,46 @@ async def stats_cmd(message: Message):
     today = moscow_today()
     async with async_session_maker() as session:
         dao = StatsDAO(session)
-        board = await dao.leaderboard(chat_id)
+        board = await _writers_board(session, chat_id, bot_id)
         week = dict(await dao.leaderboard(chat_id, today - timedelta(days=6)))
         day = dict(await dao.leaderboard(chat_id, today))
-        names = await build_names(session, [user_id])
-        best = await dao.best_day(chat_id, user_id)
-        active = await dao.active_days(chat_id, user_id)
+        silent = await _silent_activists(session, [uid for uid, _ in board])
+        silent_ids = {aid for aid, _ in silent}
+        names = await build_names(session, [user_id] if user_id else [])
+        best = await dao.best_day(chat_id, user_id) if user_id else None
+        active = await dao.active_days(chat_id, user_id) if user_id else 0
         first_day = await dao.first_day(chat_id)
 
-    place = next((i for i, (uid, _) in enumerate(board, start=1) if uid == user_id), None)
-    count = next((n for uid, n in board if uid == user_id), 0)
-    name = html.escape(names[user_id])
+    total_people = len(board) + len(silent)
+    if user_id is not None:
+        place = next((i for i, (uid, _) in enumerate(board, start=1) if uid == user_id), None)
+        count = next((n for uid, n in board if uid == user_id), 0)
+    else:
+        place, count = None, 0
+    if place is None and user_id is not None:
+        # Писавший не из этого чата? Такого быть не должно — но без падений.
+        place = len(board) + 1
+    name = html.escape(names[user_id]) if user_id is not None else ""
 
     if not count:
+        # Ноль сообщений: либо молчун из актива, либо чужак.
+        if user_id is not None:
+            async with async_session_maker() as session:
+                aid = await _activist_id_of(session, user_id)
+        else:
+            aid = silent_activist.id if silent_activist is not None else None
+        if aid is not None and aid in silent_ids:
+            idx = next(i for i, (a, _) in enumerate(silent) if a == aid)
+            disp = html.escape(dict(silent)[aid])
+            await message.answer(
+                f"💬 <b>Статистика — {disp}</b>\n" + DIVIDER + "\n"
+                f"📊 <b>Всего:</b> 0 сообщений\n"
+                f"🏅 <b>Место:</b> {len(board) + idx + 1} из {total_people}",
+                parse_mode="HTML",
+            )
+            return
+        if not name and message.from_user:
+            name = html.escape(message.from_user.full_name)
         since = f" (считаю с {first_day.strftime('%d.%m.%Y')})" if first_day else ""
         await message.reply(f"У {name} пока ни одного сообщения{since}.")
         return
@@ -228,7 +312,7 @@ async def stats_cmd(message: Message):
         f"💬 <b>Статистика — {name}</b>",
         DIVIDER,
         f"📊 <b>Всего:</b> {_msgs(count)} · {_share(count, total)} чата",
-        f"🏅 <b>Место:</b> {place} из {len(board)}",
+        f"🏅 <b>Место:</b> {place} из {total_people}",
     ]
     if active:
         lines.append(
