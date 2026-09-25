@@ -32,7 +32,9 @@ class FirstWord(BaseFilter):
         if not message.text:
             return False
         parts = message.text.strip().split(maxsplit=1)
-        return bool(parts) and parts[0].casefold() == self.cmd
+        # Слэш-команды в группах ходят с суффиксом: /цитата@ботик.
+        word = parts[0].split("@", maxsplit=1)[0].casefold()
+        return bool(parts) and word == self.cmd
 
 
 quotes_router = Router()
@@ -76,6 +78,29 @@ async def _send_quote_pngs(message: Message, pngs: list, caption_html: str | Non
 def _quoted_text(reply: Message) -> str | None:
     parts = [t for src in (reply.text, reply.caption) if src and (t := src.strip())]
     return "\n\n".join(parts) if parts else None
+
+
+CHAIN_MAX = 20  # глубина цепочки ответов — от зацикливаний
+
+
+def _collect_chain(replied: Message) -> tuple[list[str], Message]:
+    """Тексты цепочки ответов от корня + корневое сообщение.
+
+    Пустые (стикеры без подписи) пропускаем, дальше по цепочке идём.
+    Телеграм отдаёт вложенность насколько смог — берём что есть."""
+    parts: list[str] = []
+    current: Message | None = replied
+    root = replied
+    for _ in range(CHAIN_MAX):
+        if current is None:
+            break
+        root = current
+        text = (current.text or current.caption or "").strip()
+        if text:
+            parts.append(text)
+        current = current.reply_to_message
+    parts.reverse()
+    return parts, root
 
 
 def _display_author(user) -> str:
@@ -249,6 +274,46 @@ async def save_quote(message: Message):
         tg_username = _display_author(author)
 
     await _build_and_send(message, tg_id, tg_username, text_body, caption_html)
+
+
+@quotes_router.message(FirstWord("/цитата"))
+async def chain_quote(message: Message):
+    """Новая /цитата (не правит !цитата): склеивает всю цепочку ответов
+    до корневого сообщения через пробел и приписывает первому человеку:
+    «Имя: я обожаю, когда мне сосут хуй и лижут яйца»."""
+    if not message.reply_to_message:
+        await message.reply(
+            "Ответь /цитата на сообщение в цепочке — склею все ответы до корня.")
+        return
+
+    parts, root = _collect_chain(message.reply_to_message)
+    if not parts:
+        await message.reply("В цепочке нет текста — склеивать нечего.")
+        return
+
+    author = root.from_user
+    if not author and _forwarded_author(root) is None:
+        await message.reply("Не могу определить автора корневого сообщения.")
+        return
+
+    forwarded = _forwarded_author(root)
+    if forwarded is not None:
+        tg_id, tg_username = forwarded
+    else:
+        tg_id = str(author.id)
+        tg_username = _display_author(author)
+
+    try:
+        avatar_uid = int(tg_id)
+    except (ValueError, TypeError):
+        avatar_uid = None
+    async with async_session_maker() as session:
+        image_author = await fio_name(session, avatar_uid, tg_username)
+    if not image_author:
+        image_author = tg_username
+
+    text_body = f"{image_author}: {' '.join(parts)}"
+    await _build_and_send(message, tg_id, tg_username, text_body)
 
 
 @quotes_router.message(F.voice | F.video_note)
