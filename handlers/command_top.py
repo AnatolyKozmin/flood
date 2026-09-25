@@ -48,8 +48,6 @@ PERIODS: dict[str, tuple[int | None, str]] = {
 # Слова-украшения: «!топ болтунов» должен работать так же, как «!топ».
 FILLER = {"болтунов", "болтун", "флудеров", "флудер", "чата", "чате", "по", "общению", "сообщениям"}
 
-GROUP_ONLY = "Эта команда для группового чата — в личке считать нечего 🙂"
-
 
 class FirstWord(BaseFilter):
     """Команда — ровно первое слово сообщения (как в !цитата)."""
@@ -103,10 +101,6 @@ def _place(place: int) -> str:
 
 @top_router.message(FirstWord(TOP_CMD))
 async def top_cmd(message: Message):
-    if not _is_group(message):
-        await message.reply(GROUP_ONLY)
-        return
-
     period = _period(_args(message, TOP_CMD))
     if period is None:
         await message.reply(
@@ -121,12 +115,20 @@ async def top_cmd(message: Message):
     await flush_stats()  # чтобы в топе были и сообщения последних секунд
     async with async_session_maker() as session:
         dao = StatsDAO(session)
-        board = await dao.leaderboard(message.chat.id, _since(days_back))
+        if _is_group(message):
+            chat_id = message.chat.id
+        else:
+            # Личка: топ флуда (самого болтливого чата).
+            chat_id = await dao.biggest_chat()
+            if chat_id is None:
+                await message.reply("Пока нечего показывать — бот ещё нигде не считал.")
+                return
+        board = await dao.leaderboard(chat_id, _since(days_back))
         if not board:
             await message.reply(f"Пока нечего показывать — сообщений {title} я не насчитал.")
             return
         names = await build_names(session, [user_id for user_id, _ in board[:TOP_LIMIT]])
-        first_day = await dao.first_day(message.chat.id) if days_back is None else None
+        first_day = await dao.first_day(chat_id) if days_back is None else None
 
     total = sum(count for _, count in board)
     lines = [f"🏆 <b>Топ болтунов</b> — {title}", DIVIDER]
