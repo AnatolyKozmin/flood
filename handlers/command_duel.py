@@ -45,10 +45,13 @@ MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 ROULETTE_DEATH_CHANCE = 1 / 6
 
-# Подкрутка: Хафизова Милана выигрывает дуэли всегда. Смотрим по id,
-# когда узнаем (надёжно), пока — по тегу (сменит тег — сказать мне).
+# Подкрутка: Хафизова Милана выигрывает дуэли ТОЛЬКО против
+# Никитина Олега, с остальными — честная монетка. Смотрим по id,
+# когда узнаем (надёжно), пока — по тегам (сменят — сказать мне).
 MILANA_TAGS = {"milana00_00"}
 MILANA_IDS: set[int] = set()
+OLEG_TAGS = {"o1ezheq"}
+OLEG_IDS: set[int] = set()
 
 SHALNAYA_HIT_CHANCE = 3 / 4
 # Шальная — штука громкая, поэтому не чаще раза в 15 минут на чат.
@@ -112,6 +115,12 @@ def _is_milana(user_id: int, username: str | None) -> bool:
     if user_id in MILANA_IDS:
         return True
     return (username or "").strip().lstrip("@").casefold() in MILANA_TAGS
+
+
+def _is_oleg(user_id: int, username: str | None) -> bool:
+    if user_id in OLEG_IDS:
+        return True
+    return (username or "").strip().lstrip("@").casefold() in OLEG_TAGS
 
 
 async def _resolve_target(message: Message) -> tuple[int, str, str] | None:
@@ -190,13 +199,16 @@ async def duel_cmd(message: Message):
             )
             return
 
-        # Победитель случаен: пасть может и вызвавший. Кроме Миланы —
-        # она выигрывает всегда, в любую сторону.
+        # Победитель случаен: пасть может и вызвавший. Кроме пары
+        # Милана — Олег: там выигрывает только Милана, в любую сторону.
+        # С остальными у неё честная монетка, как у всех.
         milana_target = _is_milana(target_id, target_tag)
         milana_me = _is_milana(me_id, me_tag)
-        if milana_target and not milana_me:
+        oleg_target = _is_oleg(target_id, target_tag)
+        oleg_me = _is_oleg(me_id, me_tag)
+        if milana_target and oleg_me:
             loser, winner = (me_id, me_tag, me_name), (target_id, target_tag, target_name)
-        elif milana_me and not milana_target:
+        elif milana_me and oleg_target:
             loser, winner = (target_id, target_tag, target_name), (me_id, me_tag, me_name)
         elif random.random() < 0.5:
             loser, winner = (target_id, target_tag, target_name), (me_id, me_tag, me_name)
