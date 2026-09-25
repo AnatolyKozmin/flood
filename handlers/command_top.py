@@ -181,10 +181,6 @@ async def _target_user_id(message: Message, query: str) -> tuple[int | None, str
 
 @top_router.message(FirstWord(*STATS_ALIASES))
 async def stats_cmd(message: Message):
-    if not _is_group(message):
-        await message.reply(GROUP_ONLY)
-        return
-
     command = message.text.strip().split(maxsplit=1)[0]
     query = _args(message, command)
 
@@ -194,16 +190,27 @@ async def stats_cmd(message: Message):
         await message.reply(error)
         return
 
+    async with async_session_maker() as session:
+        dao = StatsDAO(session)
+        if _is_group(message):
+            chat_id = message.chat.id
+        else:
+            # Личка: смотрим флуд (самый болтливый чат), себя — по умолчанию.
+            chat_id = await dao.biggest_chat()
+            if chat_id is None:
+                await message.reply("Пока нечего показывать — бот ещё нигде не считал.")
+                return
+
     today = moscow_today()
     async with async_session_maker() as session:
         dao = StatsDAO(session)
-        board = await dao.leaderboard(message.chat.id)
-        week = dict(await dao.leaderboard(message.chat.id, today - timedelta(days=6)))
-        day = dict(await dao.leaderboard(message.chat.id, today))
+        board = await dao.leaderboard(chat_id)
+        week = dict(await dao.leaderboard(chat_id, today - timedelta(days=6)))
+        day = dict(await dao.leaderboard(chat_id, today))
         names = await build_names(session, [user_id])
-        best = await dao.best_day(message.chat.id, user_id)
-        active = await dao.active_days(message.chat.id, user_id)
-        first_day = await dao.first_day(message.chat.id)
+        best = await dao.best_day(chat_id, user_id)
+        active = await dao.active_days(chat_id, user_id)
+        first_day = await dao.first_day(chat_id)
 
     place = next((i for i, (uid, _) in enumerate(board, start=1) if uid == user_id), None)
     count = next((n for uid, n in board if uid == user_id), 0)

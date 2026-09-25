@@ -67,6 +67,17 @@ class StatsDAO:
         rows = (await self.session.execute(query)).all()
         return [(row.user_id, int(row.n or 0)) for row in rows]
 
+    async def biggest_chat(self) -> int | None:
+        """Чат с наибольшим числом сообщений — флуд для команд из лички."""
+        query = (
+            select(MessageStat.chat_id, func.sum(MessageStat.count).label("n"))
+            .group_by(MessageStat.chat_id)
+            .order_by(func.sum(MessageStat.count).desc())
+            .limit(1)
+        )
+        row = (await self.session.execute(query)).first()
+        return int(row.chat_id) if row is not None else None
+
     async def first_day(self, chat_id: int) -> date | None:
         """День, с которого вообще есть счётчики (бот не видит историю до себя)."""
         query = select(func.min(MessageStat.day)).where(MessageStat.chat_id == chat_id)
