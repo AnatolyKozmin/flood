@@ -22,9 +22,8 @@ from aiogram.enums import ContentType
 from aiogram.types import Message
 
 from database.engine import async_session_maker
-from database.chain_dao import ChainDAO, TEXT_MAX
 from database.stats_dao import StatsDAO
-from utils.helpers import MSK, moscow_today, msk_now
+from utils.helpers import MSK, moscow_today
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,6 @@ GROUP_CHATS = {"group", "supergroup"}
 
 _counts: dict[tuple[int, int, date], int] = {}
 _users: dict[int, tuple[str | None, str, datetime]] = {}
-_chain: dict[tuple[int, int], dict] = {}
 _lock = asyncio.Lock()
 _last_flush = monotonic()
 
@@ -68,22 +66,6 @@ def remember(message: Message) -> None:
     user = message.from_user
     if user is None or user.is_bot:
         return
-    # Лог для цепочек /цитата — все чаты включая личку (/цитата везде).
-    # Только текстовое несёт смысл, но reply_to_id нужен от всех подряд,
-    # иначе цепочка порвётся на стикере/кружке посередине.
-    if message.content_type in COUNTED:
-        text = (message.text or message.caption or "").strip()[:TEXT_MAX]
-        reply = message.reply_to_message
-        _chain[(message.chat.id, message.message_id)] = {
-            "chat_id": message.chat.id,
-            "message_id": message.message_id,
-            "user_id": user.id,
-            "username": user.username or "",
-            "display": user.full_name or "",
-            "text": text,
-            "reply_to_id": reply.message_id if reply is not None else None,
-            "created_at": msk_now(),
-        }
     if message.chat.type not in GROUP_CHATS:
         return
     if message.content_type not in COUNTED:
@@ -100,13 +82,11 @@ async def flush_stats() -> None:
     global _last_flush
     async with _lock:
         _last_flush = monotonic()
-        if not _counts and not _users and not _chain:
+        if not _counts and not _users:
             return
         counts, users = dict(_counts), dict(_users)
-        chain = list(_chain.values())
         _counts.clear()
         _users.clear()
-        _chain.clear()
         try:
             async with async_session_maker() as session:
                 await StatsDAO(session).bump(counts, users)
@@ -117,19 +97,7 @@ async def flush_stats() -> None:
                 _counts[key] = _counts.get(key, 0) + value
             for user_id, value in users.items():
                 _users.setdefault(user_id, value)
-            for row in chain:
-                _chain.setdefault((row["chat_id"], row["message_id"]), row)
             logger.exception("Не смог записать статистику сообщений")
-            return
-        try:
-            async with async_session_maker() as session:
-                dao = ChainDAO(session)
-                await dao.bump(chain)
-                chats = {row["chat_id"] for row in chain}
-                for chat_id in chats:
-                    await dao.prune(chat_id)
-        except Exception:
-            logger.exception("Не смог записать лог сообщений")
 
 
 async def _flush_if_due() -> None:
