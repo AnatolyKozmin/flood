@@ -83,24 +83,69 @@ def _quoted_text(reply: Message) -> str | None:
 CHAIN_MAX = 20  # глубина цепочки ответов — от зацикливаний
 
 
-def _collect_chain(replied: Message) -> tuple[list[str], Message]:
-    """Тексты цепочки ответов от корня + корневое сообщение.
+class _RowMsg:
+    """Строка chain_messages под видом Message: дальше только текст,
+    автор и id ответа."""
 
-    Пустые (стикеры без подписи) пропускаем, дальше по цепочке идём.
-    Телеграм отдаёт вложенность насколько смог — берём что есть."""
+    def __init__(self, row):
+        from types import SimpleNamespace
+
+        self.text = row.text or None
+        self.caption = None
+        self.reply_to_message = None
+        self.forward_origin = None
+        self.forward_from = None
+        self.forward_sender_name = None
+        self.forward_from_chat = None
+        self.message_id = row.message_id
+        self.from_user = SimpleNamespace(
+            id=row.user_id, username=row.username or None,
+            full_name=row.display or "")
+        self._reply_to_id = row.reply_to_id
+
+
+async def _collect_chain(session, chat_id: int, replied: Message,
+                         ) -> tuple[list[str], str, str]:
+    """Тексты цепочки от корня + (tg_id, tg_username) корневого автора.
+
+    Живые объекты — насколько телеграм отдал (обычно 1 уровень), дальше
+    идём по своему логу (chat_id, reply_to_id). Пустые пропускаем."""
+    from database.chain_dao import ChainDAO
+
+    dao = ChainDAO(session)
     parts: list[str] = []
-    current: Message | None = replied
-    root = replied
+    root_id, root_tag = "", ""
+    current, live = replied, True
     for _ in range(CHAIN_MAX):
         if current is None:
             break
-        root = current
         text = (current.text or current.caption or "").strip()
+        user = current.from_user
+        if user is not None:
+            root_id, root_tag = str(user.id), _display_author(user)
+        elif live:
+            forwarded = _forwarded_author(current)
+            if forwarded is not None:
+                root_id, root_tag = forwarded
         if text:
             parts.append(text)
-        current = current.reply_to_message
+        nxt = current.reply_to_message if live else None
+        if nxt is not None:
+            current, live = nxt, True
+            continue
+        if live:
+            row = await dao.get(chat_id, current.message_id)
+            rid = row.reply_to_id if row is not None else None
+        else:
+            rid = current._reply_to_id
+        if rid is None:
+            break
+        row = await dao.get(chat_id, rid)
+        if row is None:
+            break
+        current, live = _RowMsg(row), False
     parts.reverse()
-    return parts, root
+    return parts, root_id, root_tag
 
 
 def _display_author(user) -> str:
@@ -286,22 +331,17 @@ async def chain_quote(message: Message):
             "Ответь /цитата на сообщение в цепочке — склею все ответы до корня.")
         return
 
-    parts, root = _collect_chain(message.reply_to_message)
+    from middlewares.message_counter import flush_stats
+    await flush_stats()  # свой лог свежий: вдруг цепочка из последних секунд
+    async with async_session_maker() as session:
+        parts, tg_id, tg_username = await _collect_chain(
+            session, message.chat.id, message.reply_to_message)
     if not parts:
         await message.reply("В цепочке нет текста — склеивать нечего.")
         return
-
-    author = root.from_user
-    if not author and _forwarded_author(root) is None:
+    if not tg_id and not tg_username:
         await message.reply("Не могу определить автора корневого сообщения.")
         return
-
-    forwarded = _forwarded_author(root)
-    if forwarded is not None:
-        tg_id, tg_username = forwarded
-    else:
-        tg_id = str(author.id)
-        tg_username = _display_author(author)
 
     try:
         avatar_uid = int(tg_id)
