@@ -21,6 +21,9 @@ class StatsDAO:
 
         UPSERT: если строка на «чат + человек + день» уже есть — прибавляем,
         если нет — создаём. Одним запросом на всю пачку, без чтения перед записью.
+        Тег и имя пустыми не затираем: импорт истории тегов не знает (там NULL),
+        а живые hidden-профили шлют пустые поля — затирать значило бы терять
+        привязку к базе актива и ломать официальные ФИО в топах.
         """
         if users:
             rows = [
@@ -31,8 +34,11 @@ class StatsDAO:
             stmt = stmt.on_conflict_do_update(
                 index_elements=["user_id"],
                 set_={
-                    "username": stmt.excluded.username,
-                    "full_name": stmt.excluded.full_name,
+                    "username": func.coalesce(
+                        stmt.excluded.username, StatsUser.username),
+                    "full_name": func.coalesce(
+                        func.nullif(stmt.excluded.full_name, ""),
+                        StatsUser.full_name),
                     "last_seen": stmt.excluded.last_seen,
                 },
             )
