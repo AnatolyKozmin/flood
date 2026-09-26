@@ -180,23 +180,41 @@ ODD = {"нечет", "нечёт", "нечетное", "нечётное"}
 
 _CHOICE_RE = re.compile(
     r"^(.+?)\(([^)]+)\)\s+или\s+(.+?)\(([^)]+)\)$", re.IGNORECASE)
+_BARE_RE = re.compile(
+    r"^(.*\S)\s+(чёт|чет|чётное|четное|нечёт|нечет|нечётное|нечетное|1-3|4-6)$",
+    re.IGNORECASE)
 
 
 def _parse_choice(arg: str) -> tuple[tuple[str, set[int]], tuple[str, set[int]]] | None:
-    """'домой(1-3) или в клуб(нечет)' -> ((домой, {1,2,3}), (в клуб, {1,3,5})).
+    """Выбор из двух: 'домой(1-3) или в клуб(4-6)' или без скобок
+    'спать 1-3 или не спать 4-6' (условие — последним словом половины).
     Условия те же строгие. None — не похоже на выбор."""
-    match = _CHOICE_RE.match(arg.strip())
-    if match is None:
+    text = arg.strip().replace("—", "-").replace("–", "-")
+    match = _CHOICE_RE.match(text)
+    if match is not None:
+        first, cond_first, second, cond_second = (
+            part.strip() for part in match.groups())
+        parsed_first = _parse_dice(cond_first)
+        parsed_second = _parse_dice(cond_second)
+        if (parsed_first is None or parsed_second is None
+                or not first or not second
+                or len(first) > 100 or len(second) > 100):
+            return None
+        return (first, parsed_first[0]), (second, parsed_second[0])
+    halves = re.split(r"\s+или\s+", text, maxsplit=1, flags=re.IGNORECASE)
+    if len(halves) != 2:
         return None
-    first, cond_first, second, cond_second = (
-        part.strip() for part in match.groups())
-    parsed_first = _parse_dice(cond_first)
-    parsed_second = _parse_dice(cond_second)
-    if (parsed_first is None or parsed_second is None
-            or not first or not second
-            or len(first) > 100 or len(second) > 100):
-        return None
-    return (first, parsed_first[0]), (second, parsed_second[0])
+    out = []
+    for half in halves:
+        bare = _BARE_RE.match(half.strip())
+        if bare is None:
+            return None
+        opt, cond = bare.group(1).strip(), bare.group(2)
+        parsed = _parse_dice(cond)
+        if parsed is None or not opt or len(opt) > 100:
+            return None
+        out.append((opt, parsed[0]))
+    return out[0], out[1]
 
 
 def _parse_dice(arg: str) -> tuple[set[int], str] | None:
