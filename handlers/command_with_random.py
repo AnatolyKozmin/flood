@@ -1,3 +1,4 @@
+import asyncio
 import html
 import io
 import random
@@ -170,7 +171,7 @@ def _makan_photo() -> Path | None:
     return None
 
 
-DICE_COOLDOWN = 30.0  # один кубик на человека: чаще — жди
+DICE_COOLDOWN = 15.0  # один кубик на человека: чаще — жди
 _last_dice: dict[int, float] = {}
 
 EVEN = {"чет", "чёт", "четное", "чётное"}
@@ -238,6 +239,8 @@ async def dice_cmd(message: Message):
     _last_dice[message.from_user.id] = now
     rolled = await message.answer_dice(emoji="🎲")
     value = rolled.dice.value if rolled.dice else 0
+    # Вердикт только после анимации (~3 сек): иначе спойлерим итог.
+    await asyncio.sleep(4.0)
     if choice is not None:
         (first, win_first), (second, win_second) = choice
         if value in win_first:
