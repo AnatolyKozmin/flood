@@ -1,6 +1,7 @@
 import html
 import io
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
@@ -167,6 +168,97 @@ def _makan_photo() -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+DICE_COOLDOWN = 30.0  # один кубик на человека: чаще — жди
+_last_dice: dict[int, float] = {}
+
+EVEN = {"чет", "чёт", "четное", "чётное"}
+ODD = {"нечет", "нечёт", "нечетное", "нечётное"}
+
+
+_CHOICE_RE = re.compile(
+    r"^(.+?)\(([^)]+)\)\s+или\s+(.+?)\(([^)]+)\)$", re.IGNORECASE)
+
+
+def _parse_choice(arg: str) -> tuple[tuple[str, set[int]], tuple[str, set[int]]] | None:
+    """'домой(1-3) или в клуб(нечет)' -> ((домой, {1,2,3}), (в клуб, {1,3,5})).
+    Условия те же строгие. None — не похоже на выбор."""
+    match = _CHOICE_RE.match(arg.strip())
+    if match is None:
+        return None
+    first, cond_first, second, cond_second = (
+        part.strip() for part in match.groups())
+    parsed_first = _parse_dice(cond_first)
+    parsed_second = _parse_dice(cond_second)
+    if (parsed_first is None or parsed_second is None
+            or not first or not second
+            or len(first) > 100 or len(second) > 100):
+        return None
+    return (first, parsed_first[0]), (second, parsed_second[0])
+
+
+def _parse_dice(arg: str) -> tuple[set[int], str] | None:
+    """Условие -> (выигрышные значения, название). None — не распознали."""
+    clean = arg.strip().casefold().replace("—", "-").replace("–", "-")
+    clean = "".join(clean.split())
+    if clean in EVEN:
+        return {2, 4, 6}, "чётное"
+    if clean in ODD:
+        return {1, 3, 5}, "нечётное"
+    if clean in ("1-3", "1–3"):
+        return {1, 2, 3}, "1–3"
+    if clean in ("4-6", "4–6"):
+        return {4, 5, 6}, "4–6"
+    return None
+
+
+@random_router.message(F.text.startswith('!кубик'))
+async def dice_cmd(message: Message):
+    from time import monotonic
+
+    arg = message.text.strip()[len('!кубик'):].strip()
+    if not arg:
+        await message.reply(
+            "Условие не понял. Так можно: <code>!кубик чёт</code> · "
+            "<code>!кубик нечет</code> · <code>!кубик 1-3</code> · "
+            "<code>!кубик 4-6</code> · <code>!кубик выиграю ли</code> · "
+            "<code>!кубик домой(1-3) или в клуб(4-6)</code>",
+            parse_mode="HTML",
+        )
+        return
+    choice = _parse_choice(arg)
+    parsed = None if choice is not None else _parse_dice(arg)
+    now = monotonic()
+    last = _last_dice.get(message.from_user.id, 0.0)
+    if now - last < DICE_COOLDOWN:
+        left = int(DICE_COOLDOWN - (now - last))
+        await message.reply(f"Кубик отдыхает. Ещё {left} сек ⏳")
+        return
+    _last_dice[message.from_user.id] = now
+    rolled = await message.answer_dice(emoji="🎲")
+    value = rolled.dice.value if rolled.dice else 0
+    if choice is not None:
+        (first, win_first), (second, win_second) = choice
+        if value in win_first:
+            await message.reply(f'🎲 Кубик сказал: "{first}"')
+        elif value in win_second:
+            await message.reply(f'🎲 Кубик сказал: "{second}"')
+        else:
+            await message.reply(f"🎲 Выпало {value} — мимо обоих ❌")
+        return
+    if parsed is not None:
+        win, label = parsed
+        if value in win:
+            await message.reply(f"🎲 Выпало {value} — {label}, сошлось ✅")
+        else:
+            await message.reply(f"🎲 Выпало {value} — мимо ❌")
+        return
+    # Ставка на событие: 1–3 — да, 4–6 — нет.
+    half = "1–3" if value <= 3 else "4–6"
+    verdict = "да ✅" if value <= 3 else "нет ❌"
+    await message.reply(
+        f"🎲 {html.escape(arg)} — выпало {value} ({half}): {verdict}")
 
 
 @random_router.message(F.text.startswith('!ботбрат'))
