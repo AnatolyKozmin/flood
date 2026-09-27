@@ -1,5 +1,6 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import Boolean, Integer, String, DateTime
+from datetime import datetime
 
 
 class Base(DeclarativeBase):
@@ -36,5 +37,8 @@ class Quotes(Base):
 
     tg_id: Mapped[str] = mapped_column(String)
     tg_username: Mapped[str] = mapped_column(String)
-    
+
     text_of_quotes: Mapped[str] = mapped_column()
+    # Когда сохранили: по ней подбираем аватарку того времени. У старых —
+    # NULL, тогда берём последнюю доступную.
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

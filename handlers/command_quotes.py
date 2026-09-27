@@ -13,7 +13,8 @@ from database.engine import async_session_maker
 from utils.create_quote import render_quote_pages
 from handlers.command_quotes_top import vote_kb
 from utils.names import fio_name
-from utils.telegram_avatar import load_user_profile_avatar
+from utils.helpers import msk_now
+from utils.telegram_avatar import avatar_at, snapshot_avatar
 from utils import voice_transcribe
 
 logger = logging.getLogger(__name__)
@@ -163,7 +164,8 @@ async def _build_and_send(message: Message, tg_id: str, tg_username: str,
     async def _avatar():
         if avatar_uid is None:
             return None
-        return await load_user_profile_avatar(message.bot, avatar_uid)
+        # Новая цитата — снимаем текущий вид (и в latest, и в историю).
+        return await snapshot_avatar(message.bot, avatar_uid)
 
     async def _db_lookup():
         async with async_session_maker() as session:
@@ -186,7 +188,8 @@ async def _build_and_send(message: Message, tg_id: str, tg_username: str,
 
     async with async_session_maker() as session:
         quote = await QuotesDAO(session).create(
-            tg_id=tg_id, tg_username=tg_username, text_of_quotes=text_body
+            tg_id=tg_id, tg_username=tg_username, text_of_quotes=text_body,
+            created_at=msk_now(),
         )
     await _send_quote_pngs(message, pngs, caption_html=caption_html, quote_id=quote.id)
 
@@ -320,7 +323,7 @@ async def random_wisdom(message: Message):
     async def _get_avatar():
         if uid is None:
             return None
-        return await load_user_profile_avatar(message.bot, uid)
+        return await avatar_at(message.bot, uid, q.created_at)
 
     activist, avatar = await asyncio.gather(_get_activist(), _get_avatar())
 

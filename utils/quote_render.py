@@ -12,7 +12,7 @@ from aiogram import Bot
 from database.engine import async_session_maker
 from utils.create_quote import render_quote_pages
 from utils.names import fio_name
-from utils.telegram_avatar import load_user_profile_avatar
+from utils.telegram_avatar import avatar_at
 
 # Отступ между двумя цитатами на картинке батла.
 _GAP = 18
@@ -38,7 +38,7 @@ async def quote_avatar(bot: Bot, quote) -> Image.Image | None:
         uid = int(quote.tg_id)
     except (TypeError, ValueError):
         return None
-    return await load_user_profile_avatar(bot, uid)
+    return await avatar_at(bot, uid, getattr(quote, "created_at", None))
 
 
 async def render_one(bot: Bot, quote, loop) -> io.BytesIO:
