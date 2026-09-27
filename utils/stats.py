@@ -26,7 +26,8 @@ def plural(value: int, one: str, few: str, many: str) -> str:
 
 async def build_names(session, user_ids: list[int]) -> dict[int, str]:
     """Имя для каждого user_id: ФИО из базы актива (сначала по tg_id,
-    потом по тегу — скрытые профили тоже находятся) → имя из телеги → @тег."""
+    потом по тегу — скрытые профили тоже находятся) → имя из телеги.
+    Теги не показываем: только имя и фамилия."""
     from utils.names import fio_name
 
     stats_users = await StatsDAO(session).users(user_ids)
@@ -40,8 +41,6 @@ async def build_names(session, user_ids: list[int]) -> dict[int, str]:
             names[user_id] = fio
         elif user and user.full_name:
             names[user_id] = user.full_name
-        elif username:
-            names[user_id] = f"@{username}"
         else:
             names[user_id] = f"id{user_id}"
     return names
