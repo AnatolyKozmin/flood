@@ -22,6 +22,7 @@ from handlers.command_candle import candle_router
 from handlers.command_seabattle import seabattle_router
 from handlers.command_kalik import kalik_router
 from handlers.command_bar import bar_router
+from handlers.command_remind import remind_router
 from handlers.command_mod import mod_router
 from handlers.command_admin import admin_router
 from middlewares.message_counter import MessageCounterMiddleware, flush_stats
@@ -29,6 +30,7 @@ from middlewares.dead_mute import DeadMuteMiddleware
 from middlewares.admin_promote import AdminPromoteMiddleware
 from database.engine import init_db, close_db
 from utils.duel_scheduler import duel_worker
+from utils.remind_worker import remind_worker
 # ДР: from utils.birthday import birthday_worker
 
 load_dotenv()
@@ -59,6 +61,7 @@ dp.include_router(candle_router)
 dp.include_router(seabattle_router)
 dp.include_router(kalik_router)
 dp.include_router(bar_router)
+dp.include_router(remind_router)
 dp.include_router(top_router)
 dp.include_router(all_router)
 
@@ -77,6 +80,7 @@ dp.message.outer_middleware(AdminPromoteMiddleware())
 async def main():
     await init_db()
     duel_task = asyncio.create_task(duel_worker(bot))
+    remind_task = asyncio.create_task(remind_worker(bot))
     # ДР: поздравления с днём рождения. Как включить — см. utils/birthday.py
     # ДР: birthday_task = asyncio.create_task(birthday_worker(bot))
     try:
@@ -84,6 +88,7 @@ async def main():
         await dp.start_polling(bot)
     finally:
         duel_task.cancel()
+        remind_task.cancel()
         # ДР: birthday_task.cancel()
         await flush_stats()  # дописать счётчики, что не успели уйти в базу
         await close_db()

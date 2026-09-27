@@ -3,7 +3,7 @@ import html
 import io
 import random
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from PIL import Image
 from aiogram import Router, F
@@ -280,6 +280,116 @@ async def dice_cmd(message: Message):
     verdict = "да ✅" if value <= 3 else "нет ❌"
     await message.reply(
         f"🎲 {html.escape(arg)} — выпало {value} ({half}): {verdict}")
+
+
+_MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня",
+             "июля", "августа", "сентября", "октября", "ноября", "декабря")
+
+
+@random_router.message(F.text.startswith('!когда'))
+async def when_cmd(message: Message):
+    from datetime import timedelta
+
+    event = message.text.strip()[len('!когда'):].strip()
+    if not event:
+        await message.reply("А что именно? Например: <code>!когда зарплата</code>",
+                            parse_mode="HTML")
+        return
+    day = moscow_today() + timedelta(days=random.randint(1, 365))
+    await message.reply(
+        f"📅 {html.escape(event)} — {day.day} {_MONTHS[day.month - 1]} {day.year}")
+
+
+_MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня",
+             "июля", "августа", "сентября", "октября", "ноября", "декабря")
+
+_DATE_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$")
+
+
+def _parse_day_month(arg: str) -> tuple[int, int, int | None] | None:
+    """ДД.ММ[.ГГГГ] или None."""
+    match = _DATE_RE.match(arg.strip())
+    if match is None:
+        return None
+    day, month, year = (int(match.group(1)), int(match.group(2)),
+                        int(match.group(3)) if match.group(3) else None)
+    try:
+        # Без года проверяем по високосному (29.02 пропускаем — дальше
+        # вызывающие разберутся с конкретным годом).
+        date(year if year is not None else 2000, month, day)
+    except ValueError:
+        return None
+    return day, month, year
+
+
+def _date_hint(cmd: str) -> str:
+    return (f"Когда? Например: <code>{cmd} 01.09</code> "
+            f"или <code>{cmd} 01.09.2026</code>")
+
+
+@random_router.message(F.text.startswith('!до'))
+async def until_cmd(message: Message):
+    arg = message.text.strip()[len('!до'):].strip()
+    parsed = _parse_day_month(arg)
+    if parsed is None:
+        await message.reply(_date_hint("!до"), parse_mode="HTML")
+        return
+    day, month, year = parsed
+    today = moscow_today()
+    if year is not None:
+        target = date(year, month, day)
+    else:
+        target = date(today.year, month, day)
+        try:
+            candidate = target
+        except ValueError:
+            await message.reply(_date_hint("!до"), parse_mode="HTML")
+            return
+        if candidate <= today:
+            try:
+                target = date(today.year + 1, month, day)
+            except ValueError:
+                await message.reply(_date_hint("!до"), parse_mode="HTML")
+                return
+    delta = (target - today).days
+    if delta <= 0:
+        await message.reply("Это уже прошло или сегодня 🙂")
+        return
+    await message.reply(
+        f"📅 До {target.day} {_MONTHS[target.month - 1]} {target.year} "
+        f"осталось: {delta} {plural(delta, 'день', 'дня', 'дней')}")
+
+
+@random_router.message(F.text.startswith('!от'))
+async def since_cmd(message: Message):
+    arg = message.text.strip()[len('!от'):].strip()
+    parsed = _parse_day_month(arg)
+    if parsed is None:
+        await message.reply(_date_hint("!от"), parse_mode="HTML")
+        return
+    day, month, year = parsed
+    today = moscow_today()
+    if year is not None:
+        target = date(year, month, day)
+    else:
+        try:
+            target = date(today.year, month, day)
+        except ValueError:
+            await message.reply(_date_hint("!от"), parse_mode="HTML")
+            return
+        if target > today:
+            try:
+                target = date(today.year - 1, month, day)
+            except ValueError:
+                await message.reply(_date_hint("!от"), parse_mode="HTML")
+                return
+    delta = (today - target).days
+    if delta < 0:
+        await message.reply("Это ещё не наступило 🙂")
+        return
+    await message.reply(
+        f"📅 С {target.day} {_MONTHS[target.month - 1]} {target.year} "
+        f"прошло: {delta} {plural(delta, 'день', 'дня', 'дней')}")
 
 
 @random_router.message(F.text.startswith('!ботбрат'))

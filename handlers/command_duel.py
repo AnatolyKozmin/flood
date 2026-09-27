@@ -270,6 +270,8 @@ async def shalnaya_cmd(message: Message):
         return
 
     await flush_stats()  # вдруг жертва написала первый раз только что
+    me_id = message.from_user.id if message.from_user else 0
+    bot_id = message.bot.id if message.bot else 0
     async with async_session_maker() as session:
         dao = DuelDAO(session)
         stats = StatsDAO(session)
@@ -277,6 +279,9 @@ async def shalnaya_cmd(message: Message):
         users = await stats.users([uid for uid, _ in board]) if board else {}
         alive = []
         for uid, _ in board:
+            # Себя и ботов не трогаем: ни суицида, ни фрага по боту.
+            if uid == me_id or uid == bot_id:
+                continue
             user = users.get(uid)
             if user is None:
                 continue
