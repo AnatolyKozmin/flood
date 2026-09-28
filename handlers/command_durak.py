@@ -431,7 +431,7 @@ async def cb_deck(call: CallbackQuery):
     if took_over:
         await call.message.answer("Прошлый стол завис — забираю его себе.")
     await call.message.answer(
-        f"{call.from_user.full_name}, новая партия на {game.deck_size}! "
+        f"{seat.display}, новая партия на {game.deck_size}! "
         f"{first}")
     await _paint_board(call, seat)
 
