@@ -392,6 +392,11 @@ async def since_cmd(message: Message):
         f"прошло: {delta} {plural(delta, 'день', 'дня', 'дней')}")
 
 
+@random_router.message(F.text.startswith('!редбулл'))
+async def redbull_cmd(message: Message):
+    await message.reply("Сердце посадишь, не надо оно тебе")
+
+
 @random_router.message(F.text.startswith('!ботбрат'))
 async def makan_cmd(message: Message):
     photo = _makan_photo()

@@ -52,6 +52,8 @@ MILANA_TAGS = {"milana00_00"}
 MILANA_IDS: set[int] = set()
 OLEG_TAGS = {"o1ezheq"}
 OLEG_IDS: set[int] = set()
+ANATOLY_TAGS = {"yanejettt"}
+ANATOLY_IDS: set[int] = set()
 
 SHALNAYA_HIT_CHANCE = 3 / 4
 # Шальная — штука громкая, поэтому не чаще раза в 15 минут на чат.
@@ -121,6 +123,12 @@ def _is_oleg(user_id: int, username: str | None) -> bool:
     if user_id in OLEG_IDS:
         return True
     return (username or "").strip().lstrip("@").casefold() in OLEG_TAGS
+
+
+def _is_anatoly(user_id: int, username: str | None) -> bool:
+    if user_id in ANATOLY_IDS:
+        return True
+    return (username or "").strip().lstrip("@").casefold() in ANATOLY_TAGS
 
 
 async def _resolve_target(message: Message) -> tuple[int, str, str] | None:
@@ -222,6 +230,10 @@ async def duel_cmd(message: Message):
         f"Наслаждайся победой {_who(*winner)}",
         parse_mode="HTML",
     )
+    # Олег вызывает Анатолия: кроме результата дуэли — пара про отбор в ПК.
+    if _is_oleg(me_id, me_tag) and _is_anatoly(target_id, target_tag):
+        await message.answer("Отбор в ПК начинается ложиться...")
+        await message.answer("Вы положили отбор в ПК. Удачных дуэлей!")
 
 
 @duel_router.message(FirstWord(ROULETTE_CMD))

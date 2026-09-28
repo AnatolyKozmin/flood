@@ -14,7 +14,7 @@ from handlers.command_duel import DUEL_TOP_WORDS
 from handlers.command_karma import KARMA_WORDS
 from handlers.command_quotes_top import BATTLE_WORDS, QUOTE_WORDS
 from handlers.command_top import FILLER, PERIODS
-from utils.helpers import format_activist, moscow_today
+from utils.helpers import format_activist, first_last, moscow_today
 
 
 people_router = Router()
@@ -56,7 +56,7 @@ async def top_five_cmd(message: Message):
     five = random.sample(list(pool), 5)
     lines = [f"🏆 <b>Топ 5 {html.escape(title)}</b>"]
     for i, activist in enumerate(five, start=1):
-        lines.append(f"{i}. {format_activist(activist)}")
+        lines.append(f"{i}. {html.escape(first_last(activist.fio))}")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
