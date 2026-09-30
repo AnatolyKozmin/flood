@@ -18,6 +18,7 @@ from utils.helpers import MSK
 # (studak, is_active) анкета не трогает или ставит по умолчанию.
 EDITABLE = (
     "fio", "birthday", "ik_div", "group", "phone", "email", "clothes_size", "someone_div",
+    "is_active",
 )
 
 

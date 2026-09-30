@@ -198,10 +198,18 @@ def _question_kb(fld: Field, editing_one: bool) -> InlineKeyboardMarkup | ReplyK
     return _kb(row)
 
 
-def _card_kb() -> InlineKeyboardMarkup:
+def _is_active(values: dict) -> bool:
+    """В активе ли человек: у новых (ещё без строки) — да по умолчанию."""
+    return bool(values.get("is_active", True))
+
+
+def _card_kb(values: dict) -> InlineKeyboardMarkup:
+    toggle = (_btn("🚫 Убрать из актива", "active:0") if _is_active(values)
+              else _btn("✅ Вернуться в актив", "active:1"))
     return _kb(
         [_btn("💾 Сохранить", "save")],
         [_btn("✏️ Изменить", "edit")],
+        [toggle],
         [_btn("🗑 Удалить", "drop")],
     )
 
@@ -274,6 +282,9 @@ def _card_text(values: dict, saved: bool) -> str:
     for fld in FIELDS:
         lines.append(field(fld.label, _shown(fld.key, values.get(fld.key)),
                            fld.emoji, placeholder="—"))
+    lines.append(field("В активе",
+                       "✅ да" if _is_active(values) else "🚫 нет",
+                       "🏷️", placeholder="—"))
     lines += ["", "💾 сохранить · ✏️ изменить поле · 🗑 удалить анкету"]
     return "\n".join(lines)
 
@@ -341,7 +352,7 @@ async def _show_card(bot: Bot, chat_id: int, user_id: int, state: FSMContext) ->
     await state.set_state(Form.card)
     await _screen(bot, chat_id, user_id,
                   _card_text(data.get("values", {}), bool(data.get("aid"))),
-                  _card_kb())
+                  _card_kb(data.get("values", {})))
 
 
 async def _advance(bot: Bot, chat_id: int, user_id: int, state: FSMContext) -> None:
@@ -368,6 +379,8 @@ async def _load(user, state: FSMContext) -> bool:
             current = getattr(activist, fld.key, None)
             if current not in (None, "", 0):
                 values[fld.key] = current
+        values["is_active"] = (True if activist.is_active is None
+                               else bool(activist.is_active))
     await state.set_data({"values": values, "idx": 0, "one": None, "aid": aid})
     return aid is not None
 
@@ -555,6 +568,30 @@ async def cb_edit_one(call: CallbackQuery, state: FSMContext):
     await _show_question(call.bot, call.message.chat.id, call.from_user.id, state)
 
 
+@profile_router.callback_query(Form.card, F.data.startswith(f"{CB}:active:"))
+async def cb_active(call: CallbackQuery, state: FSMContext):
+    """Тумблер «в активе»: сразу пишет в базу, если анкета уже есть,
+    иначе запоминает до сохранения."""
+    _remember(call)
+    try:
+        active = bool(int(call.data.split(":")[-1]))
+    except ValueError:
+        await call.answer()
+        return
+    data = await state.get_data()
+    values = dict(data.get("values", {}))
+    values["is_active"] = active
+    await state.update_data(values=values)
+    if data.get("aid") is not None:
+        async with async_session_maker() as session:
+            activist = await ProfileDAO(session).by_tg_id(call.from_user.id)
+            if activist is not None:
+                activist.is_active = active
+                await session.commit()
+    await call.answer("В активе ✅" if active else "Убран из актива 🚫")
+    await _show_card(call.bot, call.message.chat.id, call.from_user.id, state)
+
+
 @profile_router.callback_query(Form.card, F.data == f"{CB}:save")
 async def cb_save(call: CallbackQuery, state: FSMContext):
     _remember(call)
@@ -572,6 +609,7 @@ async def cb_save(call: CallbackQuery, state: FSMContext):
         # Пропущенное поле — это осознанное «пусто», поэтому пишем и пустые.
         payload = {fld.key: values.get(fld.key, None if fld.key == "birthday" else "")
                    for fld in FIELDS}
+        payload["is_active"] = _is_active(values)
         activist = await dao.save(user.id, user.username, payload, existing)
 
     await _show_help(call.bot, call.message.chat.id, user.id, state, activist)
