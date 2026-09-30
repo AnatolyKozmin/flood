@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.meter_models import Meter
 
-START_SIZE = 10
+START_SIZE = 0
 
 
 class MeterDAO:

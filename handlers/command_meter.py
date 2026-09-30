@@ -82,3 +82,17 @@ async def metertop_cmd(message: Message):
         name = html.escape(row.display or "без имени")
         lines.append(f"{i}. {name} — {row.size} СМ")
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@meter_router.message(Exact("!валыны"))
+async def valyny_cmd(message: Message):
+    async with async_session_maker() as session:
+        top = await MeterDAO(session).top()
+    if not top:
+        await message.reply("Валын ещё ни у кого нет. Начни с !метр 🍆")
+        return
+    lines = ["🍆 <b>Топ 10 валын ИК</b>", DIVIDER]
+    for i, row in enumerate(top, 1):
+        name = html.escape(row.display or "без имени")
+        lines.append(f"{i}. {name} — {row.size} СМ")
+    await message.answer("\n".join(lines), parse_mode="HTML")

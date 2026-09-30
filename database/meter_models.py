@@ -16,5 +16,5 @@ class Meter(Base):
                                          autoincrement=False)
     username: Mapped[str] = mapped_column(String, default="")
     display: Mapped[str] = mapped_column(String, default="")
-    size: Mapped[int] = mapped_column(Integer, default=10)
+    size: Mapped[int] = mapped_column(Integer, default=0)
     last_played: Mapped[date | None] = mapped_column(Date, nullable=True)
