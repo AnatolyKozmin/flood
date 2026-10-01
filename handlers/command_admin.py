@@ -137,17 +137,11 @@ def _is_panel_cmd(message: Message) -> bool:
 
 @admin_router.message(F.chat.type == "private", F.text.lower().in_({"!id", "/id", "!мойid"}))
 async def my_id(message: Message):
-    """Свой telegram id. Нужен, чтобы прописать OWNER_ID и добавлять админов.
-
-    Доступно всем: это не секрет, человек и так может узнать его десятком
-    способов, зато без этой команды не с чего начать настройку.
-    """
-    await message.reply(
-        f"Твой telegram id: <code>{message.from_user.id}</code>\n\n"
-        "<i>Первая настройка: положи его в .env как "
-        "<code>OWNER_ID=…</code> и перезапусти бота.</i>",
-        parse_mode="HTML",
-    )
+    """Свой telegram id. Владельцу дополнительно показываем его статус."""
+    text = f"Твой telegram id: <code>{message.from_user.id}</code>"
+    if message.from_user.id == owner_id():
+        text += "\n\n👑 <b>Ты — владелец бота.</b>"
+    await message.reply(text, parse_mode="HTML",)
 
 
 @admin_router.message(_is_panel_cmd, AdminPrivate())
