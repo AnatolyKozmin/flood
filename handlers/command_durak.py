@@ -36,6 +36,17 @@ durak_router = Router()
 CB = "dk"
 
 DECKS = (24, 36, 52)
+
+# Бан на дурака: Каппушев Ислам. Матч по id, пока неизвестен — по тегу.
+DURAK_BANNED_TAGS = {"zloybarash"}
+DURAK_BANNED_IDS: set[int] = set()
+DURAK_BAN_TEXT = "Ислам, хватит валять дурака, играя в дурака"
+
+
+def _is_banned(user) -> bool:
+    if user.id in DURAK_BANNED_IDS:
+        return True
+    return (user.username or "").strip().lstrip("@").casefold() in DURAK_BANNED_TAGS
 IDLE_TIMEOUT = 1800  # зависший стол отдаём через полчаса тишины
 MAX_PRIVATE = 50  # столько личек играют одновременно
 THROTTLE_SEC = 1.0  # чаще — игнор: защита от пулемёта по кнопкам и двойных тапов
@@ -316,6 +327,9 @@ async def _owned(call: CallbackQuery) -> Seat | None:
         if seat is None or seat.game.over:
             await call.answer("Партии нет — начни с !дурак.", show_alert=True)
             return None
+    if _is_banned(call.from_user):
+        await call.answer(DURAK_BAN_TEXT, show_alert=True)
+        return None
     if BOARDS.get(uid) != (call.message.chat.id, call.message.message_id):
         await call.answer("Доска устарела — играй на новой.",
                           show_alert=True)
@@ -360,6 +374,9 @@ async def _finish_if_over(seat: Seat, user: Message | CallbackQuery) -> bool:
 @durak_router.message(Exact("!дурак"))
 async def durak_cmd(message: Message):
     uid = message.from_user.id
+    if _is_banned(message.from_user):
+        await message.reply(DURAK_BAN_TEXT)
+        return
     if _is_group_chat(message.chat):
         busy = _group_busy_for(uid)
         if busy:
@@ -399,6 +416,9 @@ async def pokertop_cmd(message: Message):
 async def cb_deck(call: CallbackQuery):
     if not _tap_ok(call.from_user.id, call.data):
         await call.answer()  # лаг + даблтап больше не плодят партии
+        return
+    if _is_banned(call.from_user):
+        await call.answer(DURAK_BAN_TEXT, show_alert=True)
         return
     try:
         deck_size = int(call.data.split(":")[-1])
@@ -458,6 +478,9 @@ async def _claim(call: CallbackQuery) -> tuple[bool, bool]:
 async def cb_new(call: CallbackQuery):
     if not _tap_ok(call.from_user.id, call.data):
         await call.answer()
+        return
+    if _is_banned(call.from_user):
+        await call.answer(DURAK_BAN_TEXT, show_alert=True)
         return
     ok, _ = await _claim(call)
     if not ok:
