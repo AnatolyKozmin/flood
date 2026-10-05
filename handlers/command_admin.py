@@ -100,6 +100,7 @@ async def _panel_kb(is_owner: bool) -> InlineKeyboardMarkup:
     ]
     if is_owner:
         rows.append([_btn("👥 Админы", "admins")])
+        rows.append([_btn("🧰 Функции", "features")])
     return _kb(*rows)
 
 
@@ -515,9 +516,7 @@ async def _admins_screen(target: CallbackQuery) -> None:
         admins = await AdminDAO(session).all()
         pending = await PendingDAO(session).all()
 
-    owner = await _who(target.bot, owner_id())
-    lines = ["👥 <b>Кто имеет доступ</b>", DIVIDER,
-             f"👑 Владелец — {owner} <i>(из .env, снять нельзя)</i>"]
+    lines = ["👥 <b>Кто имеет доступ</b>", DIVIDER]
     rows = []
     for admin in admins:
         who = await _who(target.bot, admin.tg_id, admin.username)
@@ -537,6 +536,47 @@ async def _admins_screen(target: CallbackQuery) -> None:
     rows.append([_btn("➕ Добавить", "add")])
     rows.append([_btn("↩️ В панель", "panel")])
     await _paint(target, "\n".join(lines), _kb(*rows))
+
+
+async def _features_screen(target: CallbackQuery) -> None:
+    """Тумблеры функций. Видит и жмёт только владелец."""
+    from database.feature_dao import FLAGS, FeatureDAO
+
+    async with async_session_maker() as session:
+        states = await FeatureDAO(session).all_states()
+    lines = ["🧰 <b>Функции</b>", DIVIDER]
+    rows = []
+    for key, (label, _) in FLAGS.items():
+        on = states.get(key, True)
+        mark = "✅" if on else "❌"
+        lines.append(f"{mark} {html.escape(label)}")
+        rows.append([_btn(f"{mark} {label}", f"feat:{key}")])
+    rows.append([_btn("↩️ В панель", "panel")])
+    await _paint(target, "\n".join(lines), _kb(*rows))
+
+
+@admin_router.callback_query(F.data == f"{CB}:features", OwnerOnly())
+async def cb_features(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.answer()
+    await _features_screen(call)
+
+
+@admin_router.callback_query(F.data.startswith(f"{CB}:feat:"), OwnerOnly())
+async def cb_feat_toggle(call: CallbackQuery, state: FSMContext):
+    from database.feature_dao import FLAGS, FeatureDAO
+
+    key = call.data.split(":")[-1]
+    if key not in FLAGS:
+        await call.answer()
+        return
+    async with async_session_maker() as session:
+        dao = FeatureDAO(session)
+        on = await dao.is_on(key)
+        await dao.set(key, not on)
+    await call.answer("Включено ✅" if not on else "Выключено ❌")
+    logger.info("Владелец %s переключил %s -> %s", call.from_user.id, key, not on)
+    await _features_screen(call)
 
 
 @admin_router.callback_query(F.data == f"{CB}:admins", OwnerOnly())

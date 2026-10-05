@@ -30,6 +30,7 @@ from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from middlewares.dead_mute import DeadMuteMiddleware
 from middlewares.admin_promote import AdminPromoteMiddleware
 from database.engine import init_db, close_db
+from database.feature_dao import ensure_defaults
 from utils.duel_scheduler import duel_worker
 from utils.remind_worker import remind_worker
 # ДР: from utils.birthday import birthday_worker
@@ -81,6 +82,7 @@ dp.message.outer_middleware(AdminPromoteMiddleware())
 
 async def main():
     await init_db()
+    await ensure_defaults()
     duel_task = asyncio.create_task(duel_worker(bot))
     remind_task = asyncio.create_task(remind_worker(bot))
     # ДР: поздравления с днём рождения. Как включить — см. utils/birthday.py

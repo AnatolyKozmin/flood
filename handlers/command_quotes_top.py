@@ -20,6 +20,7 @@ from aiogram.types import (
 )
 
 from database.engine import async_session_maker
+from database.feature_dao import feature_off_text, feature_on
 from database.quotes_extra_dao import BattleDAO, VotesDAO
 from utils.format import DIVIDER
 from utils.helpers import moscow_today
@@ -183,6 +184,9 @@ async def _send_album(message: Message, pngs: list, caption: str) -> None:
 
 @quotes_top_router.message(TopOf(QUOTE_WORDS))
 async def top_quotes(message: Message):
+    if not await feature_on("quotes_top"):
+        await message.reply(await feature_off_text("quotes_top"))
+        return
     period = _period(message.text.strip().casefold().split())
     if period is None:
         await message.reply(
@@ -225,6 +229,9 @@ async def top_quotes(message: Message):
 
 @quotes_top_router.message(TopOf(BATTLE_WORDS))
 async def top_battle(message: Message):
+    if not await feature_on("battle_top"):
+        await message.reply(await feature_off_text("battle_top"))
+        return
     async with async_session_maker() as session:
         dao = BattleDAO(session)
         board = await dao.top_by_points(TOP_LIMIT)

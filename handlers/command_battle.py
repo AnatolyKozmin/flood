@@ -25,6 +25,7 @@ from aiogram.types import (
 )
 
 from database.engine import async_session_maker
+from database.feature_dao import feature_off_text, feature_on
 from database.quotes_extra_dao import BATTLE_ROUNDS, BattleDAO
 from database.stats_dao import StatsDAO
 from utils.format import DIVIDER
@@ -158,6 +159,9 @@ async def _finish(bot: Bot, battle, dao: BattleDAO) -> None:
 
 @battle_router.message(StartsWith("!батл", "!баттл"))
 async def battle_cmd(message: Message):
+    if not await feature_on("battle"):
+        await message.reply(await feature_off_text("battle"))
+        return
     async with async_session_maker() as session:
         dao = BattleDAO(session)
         await dao.ensure_pool_columns()

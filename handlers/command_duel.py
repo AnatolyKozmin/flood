@@ -225,6 +225,13 @@ async def duel_cmd(message: Message):
         await dao.kill(message.chat.id, loser[0], loser[1], loser[2])
         await dao.record_duel(message.chat.id, winner, loser)
 
+    # Толя выносит Милану: вместо результата — лишь один текст.
+    # ФИО сверены с базой актива: Козьмин Анатолий Владиславович (yanejettt),
+    # Хафизова Милана Ильфатовна (milana00_00).
+    if (_is_anatoly(winner[0], winner[1])
+            and _is_milana(loser[0], loser[1])):
+        await message.answer("Хафизова Милана Ильфатовна уволилась из ИК")
+        return
     await message.answer(
         f"{_who(*loser)} умер! Воскрешение запланировано через час. "
         f"Наслаждайся победой {_who(*winner)}",
