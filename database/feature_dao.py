@@ -5,12 +5,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.engine import async_session_maker
 from database.feature_models import FeatureFlag
 
-# key -> (подпись, текст при выключении). Выключены сразу — первые три.
+# key -> (подпись, текст при выключении).
 FLAGS: dict[str, tuple[str, str]] = {
     "quotes_top": ("Топ цитат", "Без мудростей нигде не ТОПаем"),
     "battle": ("Батл", "Без мудростей нигде не ТОПаем"),
     "battle_top": ("Топ батла", "Без мудростей нигде не ТОПаем"),
+    "duel": ("Дуэль", "Поднять руки, никаких дуэлей!"),
+    "roulette": ("Рулетка", "Сегодня без суицида"),
+    "shalnaya": ("Шальная", "Патроны кончились, пока ждём"),
+    "flags": ("Флаги", "Пока нет обстрелов, флаги убраны"),
+    "wisdom": ("Мудрость", "Мудрые мысли пока не преследуют комитет"),
+    "quotes": ("Цитаты", "Такое лучше просто запомнить, сегодня без записей"),
 }
+
+# Какие сеем выключенными при первом появлении. Остальные новые — включёнными.
+DEFAULT_OFF = set(FLAGS)
 
 
 class FeatureDAO:
@@ -49,12 +58,12 @@ async def feature_off_text(name: str) -> str:
 
 
 async def ensure_defaults() -> None:
-    """Первый запуск: сеем известные флаги выключенными — один раз.
-    Дальше рулит только тумблер в админке, рестарты не сбрасывают."""
+    """Первый запуск и новые ключи: отсутствующие сеем (выключенными —
+    только из DEFAULT_OFF, остальные включёнными). Существующие и ручные
+    тумблеры не трогаем, рестарты не сбрасывают."""
     async with async_session_maker() as session:
-        states = await FeatureDAO(session).all_states()
-        if states:
-            return
         dao = FeatureDAO(session)
+        states = await dao.all_states()
         for name in FLAGS:
-            await dao.set(name, False)
+            if name not in states:
+                await dao.set(name, name not in DEFAULT_OFF)

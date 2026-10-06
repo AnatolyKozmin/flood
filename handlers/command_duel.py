@@ -22,6 +22,7 @@ from aiogram.types import Message
 
 from database.duel_dao import DuelDAO, FLAG_TTL
 from database.engine import async_session_maker
+from database.feature_dao import feature_off_text, feature_on
 from database.stats_dao import StatsDAO
 from middlewares.message_counter import flush_stats
 from datetime import timedelta
@@ -177,6 +178,9 @@ def _is_group(message: Message) -> bool:
 
 @duel_router.message(FirstWord(DUEL_CMD))
 async def duel_cmd(message: Message):
+    if not await feature_on("duel"):
+        await message.reply(await feature_off_text("duel"))
+        return
     if not _is_group(message):
         await message.reply(GROUP_ONLY)
         return
@@ -245,6 +249,9 @@ async def duel_cmd(message: Message):
 
 @duel_router.message(FirstWord(ROULETTE_CMD))
 async def roulette_cmd(message: Message):
+    if not await feature_on("roulette"):
+        await message.reply(await feature_off_text("roulette"))
+        return
     if not _is_group(message):
         await message.reply(GROUP_ONLY)
         return
@@ -274,6 +281,9 @@ async def roulette_cmd(message: Message):
 
 @duel_router.message(FirstWord(SHALNAYA_CMD))
 async def shalnaya_cmd(message: Message):
+    if not await feature_on("shalnaya"):
+        await message.reply(await feature_off_text("shalnaya"))
+        return
     if not _is_group(message):
         await message.reply(GROUP_ONLY)
         return
@@ -334,6 +344,9 @@ async def shalnaya_cmd(message: Message):
 
 @duel_router.message(FirstWords(*FLAG_UP_CMDS))
 async def flag_up_cmd(message: Message):
+    if not await feature_on("flags"):
+        await message.reply(await feature_off_text("flags"))
+        return
     if not _is_group(message):
         await message.reply(GROUP_ONLY)
         return
@@ -354,6 +367,9 @@ async def flag_up_cmd(message: Message):
 
 @duel_router.message(FirstWords(*FLAG_DOWN_CMDS))
 async def flag_down_cmd(message: Message):
+    if not await feature_on("flags"):
+        await message.reply(await feature_off_text("flags"))
+        return
     if not _is_group(message):
         await message.reply(GROUP_ONLY)
         return
@@ -374,6 +390,9 @@ async def flag_down_cmd(message: Message):
 
 @duel_router.message(FirstWord(PEACEFUL_CMD))
 async def peaceful_cmd(message: Message):
+    if not await feature_on("flags"):
+        await message.reply(await feature_off_text("flags"))
+        return
     if not _is_group(message):
         await message.reply(GROUP_ONLY)
         return
@@ -393,6 +412,9 @@ async def peaceful_cmd(message: Message):
 
 @duel_router.message(FirstWord(GRAVEYARD_CMD))
 async def graveyard_cmd(message: Message):
+    if not await feature_on("flags"):
+        await message.reply(await feature_off_text("flags"))
+        return
     if not _is_group(message):
         await message.reply(GROUP_ONLY)
         return

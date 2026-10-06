@@ -10,6 +10,7 @@ from aiogram.types import BufferedInputFile, InputMediaPhoto, Message
 from database.dao import QuotesDAO
 from database.quotes_extra_dao import VotesDAO
 from database.engine import async_session_maker
+from database.feature_dao import feature_off_text, feature_on
 from utils.create_quote import render_quote_pages
 from handlers.command_quotes_top import vote_kb
 from utils.names import fio_name
@@ -196,6 +197,9 @@ async def _build_and_send(message: Message, tg_id: str, tg_username: str,
 
 @quotes_router.message(FirstWord("!цитата"))
 async def save_quote(message: Message):
+    if not await feature_on("quotes"):
+        await message.reply(await feature_off_text("quotes"))
+        return
     if not message.reply_to_message:
         await message.reply("Ответь этой командой на сообщение, которое нужно сохранить как цитату.")
         return
@@ -261,6 +265,9 @@ async def save_voice_quote(message: Message):
     caption = (message.caption or "").strip()
     if not caption or caption.split(maxsplit=1)[0].casefold() != "!цитата":
         return
+    if not await feature_on("quotes"):
+        await message.reply(await feature_off_text("quotes"))
+        return
     if not voice_transcribe.ENABLED:
         await message.reply(VOICE_DISABLED_TEXT)
         return
@@ -302,6 +309,9 @@ async def save_voice_quote(message: Message):
 
 @quotes_router.message(FirstWord("!мудрость"))
 async def random_wisdom(message: Message):
+    if not await feature_on("wisdom"):
+        await message.reply(await feature_off_text("wisdom"))
+        return
     async with async_session_maker() as session:
         q = await QuotesDAO(session).get_random_quote()
         votes = await VotesDAO(session).count(q.id) if q else 0
