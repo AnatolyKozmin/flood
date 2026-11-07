@@ -11,7 +11,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Activists
-from database.profile_models import ActivistLink
+from database.profile_models import ActivistLink, ActivistPhoto
 from utils.helpers import MSK
 
 # Поля, которые человек заполняет сам. Остальные колонки Activists
@@ -100,6 +100,24 @@ class ProfileDAO:
         await self.session.commit()
         return activist
 
+    async def photos(self, activist_id: int) -> dict[int, str]:
+        """Фото анкеты: {слот: file_id}."""
+        rows = await self.session.execute(
+            select(ActivistPhoto).where(ActivistPhoto.activist_id == activist_id)
+        )
+        return {row.slot: row.file_id for row in rows.scalars()}
+
+    async def set_photos(self, activist_id: int, photos: dict[int, str]) -> None:
+        for slot, file_id in photos.items():
+            stmt = sqlite_insert(ActivistPhoto).values(
+                activist_id=activist_id, slot=slot, file_id=file_id
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["activist_id", "slot"], set_={"file_id": stmt.excluded.file_id}
+            )
+            await self.session.execute(stmt)
+        await self.session.commit()
+
     async def delete(self, activist_id: int, tg_id: int) -> None:
         """Убрать анкету из базы вместе со связкой.
 
@@ -108,6 +126,9 @@ class ProfileDAO:
         """
         await self.session.execute(
             sa_delete(ActivistLink).where(ActivistLink.tg_id == tg_id)
+        )
+        await self.session.execute(
+            sa_delete(ActivistPhoto).where(ActivistPhoto.activist_id == activist_id)
         )
         await self.session.execute(
             sa_delete(Activists).where(Activists.id == activist_id)

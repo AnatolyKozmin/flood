@@ -23,3 +23,14 @@ class ActivistLink(Base):
     activist_id: Mapped[int] = mapped_column(Integer, index=True)
     username: Mapped[str | None] = mapped_column(String, nullable=True)
     filled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ActivistPhoto(Base):
+    """Фото из анкеты (два своих фото, оба обязательные). Храним только
+    file_id: сами файлы лежат у Telegram, бот переслать их может по id."""
+
+    __tablename__ = "activist_photos"
+
+    activist_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)  # 1 или 2
+    file_id: Mapped[str] = mapped_column(String)

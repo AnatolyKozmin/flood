@@ -9,13 +9,18 @@ Telegram это разрешает: в личных чатах бот может
 
 Экраны:
   помощь   — привет + что бот умеет (для тех, кто уже в базе)
-  вопрос   — один вопрос анкеты
+  вопрос   — один вопрос анкеты (два последних — фото себя, обязательные)
   карточка — анкета целиком и три кнопки: сохранить / изменить / удалить
 
 Новый человек: /start → сразу первый вопрос → ... → карточка.
 Уже знакомый:  /start → помощь, а по !обо мне → карточка.
-Сохранил      → карточка удаляется, снова помощь.
+Сохранил      → карточка удаляется, снова помощь, а анкета с фото уходит
+                в группу-архив (ANKETA_CHAT_ID в .env; id группы скажет
+                !айди, если написать его там админом).
 """
+import html
+import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,8 +32,8 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message,
-    ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
+    Message, ReplyKeyboardMarkup, ReplyKeyboardRemove,
 )
 
 from database.engine import async_session_maker
@@ -36,10 +41,26 @@ from database.profile_dao import ProfileDAO
 from handlers.command_admin import is_admin
 from handlers.command_help import ADMIN_HELP, HELP_TEXT, MOD_HELP
 from handlers.command_mod import is_mod
+from handlers.command_tracker import (
+    GAMES_PAYLOAD, GAMES_TEXT, START_PAYLOADS, TRACKER_TEXT, game_invite, games_kb, play_start,
+    tracker_kb,
+)
 from utils.format import DIVIDER, field, format_phone
 from utils.helpers import first_last, mention
 
+logger = logging.getLogger(__name__)
+
 profile_router = Router()
+
+
+def _archive_chat_id() -> int | None:
+    """Группа, куда складываем заполненные анкеты с фото. Пусто — не шлём."""
+    raw = os.getenv("ANKETA_CHAT_ID", "").strip()
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        logger.error("ANKETA_CHAT_ID должен быть числом, а не %r", raw)
+        return None
 
 CB = "pf"
 
@@ -115,6 +136,10 @@ def _email(raw: str) -> tuple[Any, str | None]:
     return value, None
 
 
+def _not_photo(raw: str) -> tuple[Any, str | None]:
+    return None, "Тут нужна фотография — пришли картинку, а не текст."
+
+
 @dataclass(frozen=True)
 class Field:
     key: str
@@ -124,6 +149,7 @@ class Field:
     hint: str
     required: bool
     parse: Callable[[str], tuple[Any, str | None]]
+    kind: str = "text"  # text | photo (ответ — фото, храним его file_id)
 
 
 # Порядок и состав — как в карточке !инфо.
@@ -147,7 +173,16 @@ FIELDS: tuple[Field, ...] = (
     Field("someone_div", "Другие подразделения", "🏢",
           "Состоишь ещё где-то, кроме актива ИК?",
           "Профбюро, штаб отрядов, что угодно. Если нигде — жми «Пропустить».", False, _text),
+    Field("photo1", "Фото 1", "📸", "Пришли своё фото",
+          "Обычной фотографией, не файлом. Чтобы лицо было хорошо видно.",
+          True, _not_photo, kind="photo"),
+    Field("photo2", "Фото 2", "📸", "И ещё одно фото себя",
+          "Любое другое — например, в полный рост. Тоже фотографией, не файлом.",
+          True, _not_photo, kind="photo"),
 )
+
+# Слоты фото в activist_photos.
+PHOTO_SLOTS = {"photo1": 1, "photo2": 2}
 
 BY_KEY = {f.key: f for f in FIELDS}
 
@@ -227,6 +262,8 @@ def _confirm_kb() -> InlineKeyboardMarkup:
 # ─────────────────────────── тексты ───────────────────────────
 
 def _shown(key: str, value) -> str:
+    if key in PHOTO_SLOTS:
+        return "загружено ✅" if value else ""
     if key == "birthday" and isinstance(value, datetime):
         return value.strftime("%d.%m.%Y")
     if key == "phone" and value:
@@ -261,7 +298,8 @@ def _question_text(idx: int, fld: Field, error: str | None,
             "👋 <b>Привет! Я БотИК.</b>",
             "",
             "Тебя ещё нет в базе актива ИК — давай зарегистрируемся. "
-            "Восемь вопросов, почти все можно пропустить. "
+            f"{len(FIELDS)} вопросов, почти все можно пропустить — "
+            "обязательны только ФИО и два твоих фото. "
             "Гугл-форму заполнять больше не надо.",
             "",
             f"<b>Вопрос 1 из {len(FIELDS)}</b>",
@@ -272,7 +310,10 @@ def _question_text(idx: int, fld: Field, error: str | None,
     lines = head + [DIVIDER, f"{fld.emoji} <b>{fld.question}</b>", f"<i>{fld.hint}</i>"]
     if error:
         lines += ["", f"⚠️ {error}"]
-    lines += ["", "<i>Ответь сообщением — я его подчищу.</i>"]
+    if fld.kind == "photo":
+        lines += ["", "<i>Пришли фото сообщением — я его подчищу.</i>"]
+    else:
+        lines += ["", "<i>Ответь сообщением — я его подчищу.</i>"]
     return "\n".join(lines)
 
 
@@ -328,7 +369,7 @@ async def _show_help(bot: Bot, chat_id: int, user_id: int, state: FSMContext,
     name = first_last(activist.fio) if activist and activist.fio else "друг"
     await _screen(bot, chat_id, user_id, _help_text(
         name, await is_admin(user_id), await is_mod(user_id)
-    ))
+    ), tracker_kb())
 
 
 async def _show_question(bot: Bot, chat_id: int, user_id: int, state: FSMContext,
@@ -381,6 +422,11 @@ async def _load(user, state: FSMContext) -> bool:
                 values[fld.key] = current
         values["is_active"] = (True if activist.is_active is None
                                else bool(activist.is_active))
+        async with async_session_maker() as session:
+            photos = await ProfileDAO(session).photos(aid)
+        for key, slot in PHOTO_SLOTS.items():
+            if slot in photos:
+                values[key] = photos[slot]
     await state.set_data({"values": values, "idx": 0, "one": None, "aid": aid})
     return aid is not None
 
@@ -400,8 +446,21 @@ async def start_cmd(message: Message, state: FSMContext):
     await _drop_msg(bot, chat_id, message.message_id)
     await state.clear()
 
-    registered = await _load(user, state)
     payload = (message.text or "").partition(" ")[2].strip()
+    # Пришли из трекера («Подключить Telegram») — анкета тут ни при чём:
+    # в трекере есть и те, кого нет в базе актива.
+    if payload in START_PAYLOADS:
+        await _screen(bot, chat_id, user.id, TRACKER_TEXT, tracker_kb())
+        return
+    # Приглашение в партию из трекера / ссылка на раздел «Игры».
+    if invite := game_invite(payload) or play_start(payload):
+        await _screen(bot, chat_id, user.id, *invite)
+        return
+    if payload == GAMES_PAYLOAD:
+        await _screen(bot, chat_id, user.id, GAMES_TEXT, games_kb())
+        return
+
+    registered = await _load(user, state)
 
     if registered and payload != "anketa":
         await _show_help(bot, chat_id, user.id, state)
@@ -433,6 +492,16 @@ async def about_group(message: Message):
         f'Анкета — в личке, <a href="{link}">жми сюда</a>.',
         parse_mode="HTML", disable_web_page_preview=True,
     )
+
+
+def _photo_of(message: Message) -> tuple:
+    """file_id присланного фото. Файлом (документом) не берём: его id нельзя
+    переслать как фото, а в архиве нужен альбом."""
+    if message.photo:
+        return message.photo[-1].file_id, None  # последнее — самое крупное
+    if message.document and (message.document.mime_type or "").startswith("image/"):
+        return None, "Это файл, а нужна фотография. Пришли её как обычное фото, не файлом."
+    return None, "Тут нужна фотография — пришли картинку."
 
 
 def _from_contact(message: Message, fld: Field) -> tuple:
@@ -502,7 +571,9 @@ async def on_answer(message: Message, state: FSMContext):
         await _cancel(bot, chat_id, user, state)
         return
 
-    if message.contact is not None:
+    if fld.kind == "photo":
+        value, error = _photo_of(message)
+    elif message.contact is not None:
         value, error = _from_contact(message, fld)
     elif not message.text:
         value, error = None, "Мне нужен текст — картинки и стикеры не подойдут."
@@ -597,8 +668,10 @@ async def cb_save(call: CallbackQuery, state: FSMContext):
     _remember(call)
     data = await state.get_data()
     values = data.get("values", {})
-    if not values.get("fio"):
-        await call.answer("Без ФИО не сохранить", show_alert=True)
+    missing = [fld.label for fld in FIELDS if fld.required and not values.get(fld.key)]
+    if missing:
+        await call.answer("Не хватает: " + ", ".join(missing) + ". Добавь через «Изменить».",
+                          show_alert=True)
         return
 
     await call.answer("Сохранил")
@@ -608,11 +681,61 @@ async def cb_save(call: CallbackQuery, state: FSMContext):
         existing = await dao.find(user.id, user.username)
         # Пропущенное поле — это осознанное «пусто», поэтому пишем и пустые.
         payload = {fld.key: values.get(fld.key, None if fld.key == "birthday" else "")
-                   for fld in FIELDS}
+                   for fld in FIELDS if fld.kind == "text"}
         payload["is_active"] = _is_active(values)
         activist = await dao.save(user.id, user.username, payload, existing)
+        await dao.set_photos(activist.id, {slot: values[key] for key, slot in PHOTO_SLOTS.items()})
 
+    await _send_to_archive(call.bot, user, values, fresh=existing is None)
     await _show_help(call.bot, call.message.chat.id, user.id, state, activist)
+
+
+def _archive_caption(user, values: dict, fresh: bool) -> str:
+    head = "🆕 <b>Новая анкета</b>" if fresh else "✏️ <b>Анкета обновлена</b>"
+    tag = mention(user.username) or "без тега"
+    lines = [head, DIVIDER]
+    for fld in FIELDS:
+        if fld.kind == "text":
+            lines.append(field(fld.label, _shown(fld.key, values.get(fld.key)),
+                               fld.emoji, placeholder="—"))
+    lines.append(field("В активе", "да" if _is_active(values) else "нет", "🏷️"))
+    lines.append(f'💬 <b>Telegram:</b> <a href="tg://user?id={user.id}">'
+                 f"{html.escape(tag)}</a> · <code>{user.id}</code>")
+    return "\n".join(lines)
+
+
+async def _send_to_archive(bot: Bot, user, values: dict, fresh: bool) -> None:
+    """Анкета с двумя фото — альбомом в группу-архив. Не вышло — человеку не
+    мешаем (анкета уже в базе), только пишем в лог."""
+    chat_id = _archive_chat_id()
+    if chat_id is None:
+        return
+    caption = _archive_caption(user, values, fresh)
+    # Подпись альбома — до 1024 символов; длинная анкета уходит отдельным сообщением.
+    fits = len(caption) <= 1024
+    media = [
+        InputMediaPhoto(media=values["photo1"], caption=caption if fits else None,
+                        parse_mode="HTML"),
+        InputMediaPhoto(media=values["photo2"]),
+    ]
+    try:
+        await bot.send_media_group(chat_id, media)
+        if not fits:
+            await bot.send_message(chat_id, caption, parse_mode="HTML")
+    except TelegramAPIError:
+        logger.exception("Анкета %s не ушла в архив %s", user.id, chat_id)
+
+
+def _is_chat_id_cmd(message: Message) -> bool:
+    return (message.text or "").strip().casefold() in ("!айди", "!id")
+
+
+@profile_router.message(F.chat.type.in_({"group", "supergroup"}), _is_chat_id_cmd)
+async def chat_id_cmd(message: Message):
+    """Подсказать id группы — его прописывают в ANKETA_CHAT_ID. Только админам бота."""
+    if not await is_admin(message.from_user.id):
+        return
+    await message.reply(f"id этого чата: <code>{message.chat.id}</code>", parse_mode="HTML")
 
 
 @profile_router.callback_query(Form.card, F.data == f"{CB}:drop")

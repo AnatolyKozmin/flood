@@ -25,6 +25,9 @@ from aiogram.types import (
 )
 
 from database.durak_dao import DurakDAO
+from handlers.command_tracker import (
+    DURAK_PLAY_TEXT, durak_play_kb_group, durak_play_kb_private,
+)
 from database.engine import async_session_maker
 from utils import durak as D
 from utils.format import DIVIDER
@@ -373,24 +376,17 @@ async def _finish_if_over(seat: Seat, user: Message | CallbackQuery) -> bool:
 
 @durak_router.message(Exact("!дурак"))
 async def durak_cmd(message: Message):
-    uid = message.from_user.id
+    """Дурак переехал в трекер ИК (раздел «Игры»): там партии с ботом и
+    один на один с приглашением во флуд. Старая игра кнопками ниже живёт
+    только ради уже открытых столов."""
     if _is_banned(message.from_user):
         await message.reply(DURAK_BAN_TEXT)
         return
     if _is_group_chat(message.chat):
-        busy = _group_busy_for(uid)
-        if busy:
-            await message.answer(
-                f"Стол занят — сейчас играет {busy}. Дождись конца партии.")
-            return
+        kb = await durak_play_kb_group(message.bot)
     else:
-        _purge_idle_private()
-        if uid not in PRIVATE_SEATS and len(PRIVATE_SEATS) >= MAX_PRIVATE:
-            await message.answer(
-                "Все столы заняты — подожди, кто-нибудь доиграет.")
-            return
-    text, kb = _deck_text()
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        kb = durak_play_kb_private()
+    await message.answer(DURAK_PLAY_TEXT, reply_markup=kb, parse_mode="HTML")
 
 
 @durak_router.message(Exact("!топовый дурак"))
