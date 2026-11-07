@@ -40,12 +40,11 @@ def draft_keyboard():
 
 async def queue_message(message, parts, user_id=None, source_key=None):
     try:
-        qid = await enqueue(parts, message.chat.id, user_id or message.from_user.id,
+        await enqueue(parts, message.chat.id, user_id or message.from_user.id,
                             source_key or f"{message.chat.id}:{message.message_id}", message.message_thread_id)
     except ValueError as error:
         await message.answer(str(error))
         return False
-    await message.answer(f"Цитата #{qid} в очереди. Отправлю результат сюда.")
     return True
 
 

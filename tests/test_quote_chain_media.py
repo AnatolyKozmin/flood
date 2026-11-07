@@ -141,9 +141,18 @@ class ChainDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await worker.process_job(bot, job)
             await worker.process_job(bot, job)
         self.assertEqual(bot.send_photo.await_count, 1)
+        kwargs = bot.send_photo.call_args.kwargs
+        self.assertEqual(kwargs["reply_markup"].inline_keyboard[0][0].callback_data, f"qv:{qid}")
+        self.assertNotIn("caption", kwargs)
+        bot.send_message.assert_not_awaited()
         async with self.maker() as session:
             self.assertEqual((await session.get(QuoteJob, job.id)).state, "done")
             self.assertEqual((await session.get(QuoteContent, qid)).outputs[0]["file_id"], "rendered-card")
+
+    async def test_enqueue_does_not_send_queue_message(self):
+        with patch.object(Message, "answer", AsyncMock()) as answer:
+            self.assertTrue(await chain.queue_message(message(1), [message_part(message(2))]))
+            answer.assert_not_awaited()
 
     async def test_partial_chain_requires_explicit_confirmation(self):
         command = message(3, "/цитата", message(2, "старый ответ"))

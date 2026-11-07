@@ -71,8 +71,10 @@ def render_key(author, avatar):
     return digest.hexdigest()
 
 
-async def send_file(bot, chat_id, kind, file, thread_id=None):
+async def send_file(bot, chat_id, kind, file, thread_id=None, reply_markup=None):
     kwargs = dict(chat_id=chat_id, message_thread_id=thread_id)
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
     if kind == "photo":
         message = await bot.send_photo(photo=file, **kwargs)
         return message.photo[-1].file_id
@@ -83,10 +85,10 @@ async def send_file(bot, chat_id, kind, file, thread_id=None):
     return message.video.file_id
 
 
-async def send_with_retry(bot, chat_id, kind, file, thread_id=None):
+async def send_with_retry(bot, chat_id, kind, file, thread_id=None, reply_markup=None):
     for attempt in range(3):
         try:
-            return await send_file(bot, chat_id, kind, file, thread_id)
+            return await send_file(bot, chat_id, kind, file, thread_id, reply_markup)
         except TelegramRetryAfter as error:
             if attempt == 2:
                 raise
@@ -127,9 +129,8 @@ async def show_content(bot, chat_id, quote_id, thread_id=None):
         await bot.send_message(chat_id, "Обновляю оформление цитаты. Повтори просмотр после обработки.", message_thread_id=thread_id)
         return True
     for output in content.outputs:
-        await send_with_retry(bot, chat_id, output["kind"], output["file_id"], thread_id)
-    await bot.send_message(chat_id, f"Цитата #{quote_id}", message_thread_id=thread_id,
-                           reply_markup=quote_buttons(quote_id, votes))
+        await send_with_retry(bot, chat_id, output["kind"], output["file_id"], thread_id,
+                              quote_buttons(quote_id, votes))
     return True
 
 
@@ -138,6 +139,7 @@ async def process_job(bot, job):
         quote = await session.get(Quotes, job.quote_id)
         content = await session.get(QuoteContent, job.quote_id)
         parts, outputs = content.parts, list(content.outputs)
+        votes = await VotesDAO(session).count(job.quote_id)
         try:
             uid = int(quote.tg_id)
         except (ValueError, TypeError):
@@ -162,7 +164,8 @@ async def process_job(bot, job):
     async def emit(kind, file):
         nonlocal output_index, outputs
         if output_index >= len(outputs):
-            fid = await send_with_retry(bot, job.chat_id, kind, file, job.thread_id)
+            fid = await send_with_retry(bot, job.chat_id, kind, file, job.thread_id,
+                                       quote_buttons(job.quote_id, votes))
             outputs.append(dict(kind=kind, file_id=fid))
             async with async_session_maker() as session:
                 row = await session.get(QuoteContent, job.quote_id)
@@ -199,13 +202,6 @@ async def process_job(bot, job):
         row = await session.get(QuoteJob, job.id)
         row.state = "done"
         await session.commit()
-    try:
-        await bot.send_message(job.chat_id, f"Цитата #{quote.id}", message_thread_id=job.thread_id,
-                               reply_markup=quote_buttons(quote.id))
-    except Exception:
-        # Медиа уже успешно отправлены и сохранены. Сбой служебной кнопки
-        # не должен превращать готовую цитату в ошибочную.
-        logger.exception("Не отправил кнопку голосования цитаты %s", quote.id)
 
 
 async def quote_worker(bot):

@@ -76,7 +76,7 @@ async def cb_vote(call: CallbackQuery):
     try:
         if content:
             from utils.quote_worker import quote_buttons
-            kb = quote_buttons(quote_id, total, view=True)
+            kb = quote_buttons(quote_id, total)
         else:
             kb = vote_kb(quote_id, total)
         await call.message.edit_reply_markup(reply_markup=kb)
