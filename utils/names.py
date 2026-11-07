@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.dao import ActivistsDAO
 from database.profile_dao import ProfileDAO
 from database.stats_models import StatsUser
+from database.profile_models import ActivistLink
+from database.contact_models import BotContact
 from utils.helpers import first_last
 
 # Подтверждённые старые ники: для импортированных цитат без Telegram-id.
@@ -96,3 +98,28 @@ async def quote_name(session: AsyncSession, user_id: int | None, username: str |
         if name:
             return name
     return _QUOTE_ALIASES.get(tag) or (username or "").strip().lstrip("@") or "чат"
+
+
+async def quote_user_id(session: AsyncSession, raw_id, username: str | None) -> int | None:
+    """Восстановить отсутствующий id только по однозначным известным связкам."""
+    try:
+        uid = int(raw_id)
+        if uid:
+            return uid
+    except (TypeError, ValueError):
+        pass
+    tag = (username or "").strip().lstrip("@").lower()
+    if not tag:
+        return None
+    candidates = set()
+    for column, tag_column in ((StatsUser.user_id, StatsUser.username),
+                               (ActivistLink.tg_id, ActivistLink.username),
+                               (BotContact.tg_id, BotContact.username)):
+        rows = await session.execute(select(column).where(
+            func.lower(func.trim(func.replace(tag_column, "@", ""))) == tag))
+        candidates.update(uid for uid in rows.scalars() if uid and uid > 0)
+    person = await activist_by_username(session, tag)
+    if person:
+        rows = await session.execute(select(ActivistLink.tg_id).where(ActivistLink.activist_id == person.id))
+        candidates.update(uid for uid in rows.scalars() if uid and uid > 0)
+    return next(iter(candidates)) if len(candidates) == 1 else None

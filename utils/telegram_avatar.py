@@ -104,18 +104,23 @@ def _last_known(user_id: int) -> Image.Image | None:
     return None
 
 
-async def _profile_avatar(bot: Bot, user_id: int) -> Image.Image | None:
+async def _profile_avatar(bot: Bot, user_id: int | None, username: str | None = None) -> Image.Image | None:
     """Фото анкеты (в том числе синхронизированной из трекера).
 
     Не пишем его в кэш Telegram: при появлении аватарки она приоритетнее.
     """
     from database.engine import async_session_maker
     from database.profile_dao import ProfileDAO
+    from database.stats_models import StatsUser
+    from utils.names import activist_by_username
 
     try:
         async with async_session_maker() as session:
             dao = ProfileDAO(session)
-            person = await dao.by_tg_id(user_id)
+            person = await dao.by_tg_id(user_id) if user_id else None
+            if person is None:
+                known = await session.get(StatsUser, user_id) if user_id else None
+                person = await activist_by_username(session, (known.username if known else None) or username)
             photos = await dao.photos(person.id) if person else {}
         for slot in sorted(photos):
             try:
@@ -154,7 +159,8 @@ async def snapshot_avatar(bot: Bot, user_id: int) -> Image.Image | None:
     except Exception:
         same = False
     _store(user_id, img)
-    if not same:
+    history_dir = _SNAP_DIR / str(int(user_id))
+    if not same or not (history_dir.is_dir() and any(history_dir.glob("*.jpg"))):
         _snapshot(user_id, img, now)
     return img
 
@@ -162,8 +168,8 @@ async def snapshot_avatar(bot: Bot, user_id: int) -> Image.Image | None:
 async def avatar_at(bot: Bot, user_id: int, at) -> Image.Image | None:
     """Аватарка, актуальная на момент at (datetime|None).
 
-    Только снимок не новее даты. Без даты/подходящего снимка не подставляем
-    сегодняшнее Telegram-фото. Фото анкеты — лишь если Telegram-истории нет.
+    При известной дате — снимок не новее неё, иначе фото анкеты.
+    Без даты используем сохранённое Telegram-фото, затем фото анкеты.
     """
     if at is not None:
         try:
@@ -192,11 +198,13 @@ async def avatar_at(bot: Bot, user_id: int, at) -> Image.Image | None:
                     continue
         except Exception:
             logger.debug("Не нашёл снапшот %s", user_id, exc_info=True)
-    # Нельзя приписать нынешнюю аватарку старой цитате. Историю не портим
-    # живым скачиванием; уже существующие latest/history блокируют подмену.
-    user_dir = _SNAP_DIR / str(int(user_id))
-    if _latest_path(user_id).is_file() or (user_dir.is_dir() and any(user_dir.glob("*.jpg"))):
-        return None
+    # У импортированных цитат дата часто отсутствует. Сохраняем доступное
+    # фото, не выдавая его за достоверный снимок определённого периода.
+    if at is None:
+        known = _last_known(user_id)
+        if known is not None:
+            return known
+    # Неподходящий Telegram-снимок не должен блокировать фото анкеты.
     return await _profile_avatar(bot, user_id)
 
 

@@ -11,8 +11,8 @@ from aiogram import Bot
 
 from database.engine import async_session_maker
 from utils.create_quote import render_quote_pages
-from utils.names import quote_name
-from utils.telegram_avatar import avatar_at
+from utils.names import quote_name, quote_user_id
+from utils.telegram_avatar import avatar_at, _profile_avatar
 from database.quote_media import QuoteContent
 from utils.media_quote import content_preview
 
@@ -23,19 +23,16 @@ _GAP = 18
 async def quote_author(quote) -> str:
     """ФИО из базы актива (сначала по tg_id — скрытые профили тоже),
     иначе @тег, иначе «чат»."""
-    try:
-        uid = int(quote.tg_id)
-    except (TypeError, ValueError):
-        uid = None
     async with async_session_maker() as session:
+        uid = await quote_user_id(session, quote.tg_id, quote.tg_username)
         return await quote_name(session, uid, quote.tg_username)
 
 
 async def quote_avatar(bot: Bot, quote) -> Image.Image | None:
-    try:
-        uid = int(quote.tg_id)
-    except (TypeError, ValueError):
-        return None
+    async with async_session_maker() as session:
+        uid = await quote_user_id(session, quote.tg_id, quote.tg_username)
+    if uid is None:
+        return await _profile_avatar(bot, None, quote.tg_username)
     return await avatar_at(bot, uid, getattr(quote, "created_at", None))
 
 

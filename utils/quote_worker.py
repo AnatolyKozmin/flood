@@ -15,8 +15,8 @@ from database.models import Quotes
 from database.quote_media import QuoteContent, QuoteJob, prune_history, validate_parts
 from database.quotes_extra_dao import VotesDAO
 from utils.helpers import msk_now
-from utils.names import quote_name
-from utils.telegram_avatar import snapshot_avatar, avatar_at
+from utils.names import quote_name, quote_user_id
+from utils.telegram_avatar import snapshot_avatar, avatar_at, _profile_avatar
 from utils.media_quote import prepare_media, text_cards
 
 logger = logging.getLogger(__name__)
@@ -140,10 +140,7 @@ async def process_job(bot, job):
         content = await session.get(QuoteContent, job.quote_id)
         parts, outputs = content.parts, list(content.outputs)
         votes = await VotesDAO(session).count(job.quote_id)
-        try:
-            uid = int(quote.tg_id)
-        except (ValueError, TypeError):
-            uid = None
+        uid = await quote_user_id(session, quote.tg_id, quote.tg_username)
         author = await quote_name(session, uid, quote.tg_username)
     # Запись создания немного раньше снятия фото: для новой цитаты используем
     # сам снимок, для возобновлённого задания — исторический подбор.
@@ -151,7 +148,7 @@ async def process_job(bot, job):
     if uid and not content.render_key:
         await snapshot_avatar(bot, uid)
         saved_at = msk_now()
-    avatar = await avatar_at(bot, uid, saved_at) if uid else None
+    avatar = await avatar_at(bot, uid, saved_at) if uid else await _profile_avatar(bot, None, quote.tg_username)
     async with async_session_maker() as session:
         row = await session.get(QuoteContent, job.quote_id)
         if not row.render_key:

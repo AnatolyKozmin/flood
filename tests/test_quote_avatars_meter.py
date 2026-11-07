@@ -81,16 +81,43 @@ class AvatarTests(unittest.IsolatedAsyncioTestCase):
         img = await avatars.avatar_at(None, 42, datetime(2026, 10, 1, 15))
         self.assertGreater(img.getpixel((0, 0))[0], 200)
 
-    async def test_unknown_date_or_missing_period_never_uses_current_avatar(self):
+    async def test_missing_period_uses_profile_instead_of_newer_telegram_photo(self):
         avatars._store(42, Image.new("RGB", (20, 20), "blue"))
         avatars._snapshot(42, Image.new("RGB", (20, 20), "blue"), 2000)
         with patch.object(avatars, "_download", AsyncMock()) as download, patch.object(
-            avatars, "_profile_avatar", AsyncMock()
+            avatars, "_profile_avatar", AsyncMock(return_value=None)
         ) as profile:
-            self.assertIsNone(await avatars.avatar_at(None, 42, None))
             self.assertIsNone(await avatars.avatar_at(None, 42, 1000))
             download.assert_not_awaited()
+            profile.assert_awaited_once_with(None, 42)
+
+    async def test_undated_quote_uses_expired_saved_avatar_without_live_download(self):
+        avatars._store(42, Image.new("RGB", (20, 20), "blue"))
+        os.utime(avatars._latest_path(42), (1, 1))
+        with patch.object(avatars, "_download", AsyncMock()) as download, patch.object(
+            avatars, "_profile_avatar", AsyncMock()
+        ) as profile:
+            image = await avatars.avatar_at(None, 42, None)
+            self.assertGreater(image.getpixel((0, 0))[2], 200)
+            download.assert_not_awaited()
             profile.assert_not_awaited()
+
+    async def test_undated_quote_uses_history_when_latest_is_missing(self):
+        avatars._snapshot(42, Image.new("RGB", (20, 20), "red"), 2000)
+        self.assertIsNotNone(await avatars.avatar_at(None, 42, None))
+
+    async def test_first_history_snapshot_created_when_latest_photo_already_cached(self):
+        image = Image.new("RGB", (20, 20), "blue")
+        avatars._store(42, image)
+        with patch.object(avatars, "_download", AsyncMock(return_value=image)):
+            await avatars.snapshot_avatar(None, 42)
+        self.assertEqual(len(list((avatars._SNAP_DIR / "42").glob("*.jpg"))), 1)
+
+    async def test_profile_is_available_even_when_newer_snapshot_exists(self):
+        avatars._snapshot(42, Image.new("RGB", (20, 20), "blue"), 2000)
+        fallback = Image.new("RGB", (20, 20), "green")
+        with patch.object(avatars, "_profile_avatar", AsyncMock(return_value=fallback)):
+            self.assertIs(await avatars.avatar_at(None, 42, 1000), fallback)
 
     async def test_legacy_snapshot_filename(self):
         folder = avatars._SNAP_DIR / "42"
