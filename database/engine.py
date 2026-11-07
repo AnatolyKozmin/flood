@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from database.models import Base
 
@@ -13,7 +12,9 @@ engine = create_async_engine(
     f"sqlite+aiosqlite:///{DB_PATH}",
     echo=False,
     future=True,
-    poolclass=StaticPool,
+    # Журнал и worker работают параллельно: каждой транзакции нужно своё
+    # соединение, а не общий StaticPool с взаимными commit/rollback.
+    connect_args={"timeout": 15},
 )
 
 async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

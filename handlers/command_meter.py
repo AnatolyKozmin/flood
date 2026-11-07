@@ -96,3 +96,17 @@ async def valyny_cmd(message: Message):
         name = html.escape(row.display or "без имени")
         lines.append(f"{i}. {name} — {row.size} СМ")
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@meter_router.message(Exact("!антивалыны"))
+async def antivalyny_cmd(message: Message):
+    async with async_session_maker() as session:
+        bottom = await MeterDAO(session).bottom()
+    if not bottom:
+        await message.reply("Валын ещё ни у кого нет. Начни с !метр 🍆")
+        return
+    lines = ["🍆 <b>Топ 10 самых маленьких валын ИК</b>", DIVIDER]
+    for i, row in enumerate(bottom, 1):
+        name = html.escape(row.display or "без имени")
+        lines.append(f"{i}. {name} — {row.size} СМ")
+    await message.answer("\n".join(lines), parse_mode="HTML")

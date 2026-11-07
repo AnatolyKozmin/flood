@@ -10,11 +10,22 @@
 
 Возвращаем сырое имя, экранируют вызывающие (у них parse_mode разный).
 """
+import json
+from pathlib import Path
+
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.dao import ActivistsDAO
 from database.profile_dao import ProfileDAO
+from database.stats_models import StatsUser
 from utils.helpers import first_last
+
+# Подтверждённые старые ники: для импортированных цитат без Telegram-id.
+# Значения уже в порядке «Имя Фамилия», без догадок по похожим никам.
+_QUOTE_ALIASES = json.loads(
+    (Path(__file__).resolve().parent.parent / "assets" / "quote_author_aliases.json").read_text(encoding="utf-8")
+)
 
 
 def _fio(activist) -> str | None:
@@ -65,3 +76,23 @@ async def display_name(session: AsyncSession, user_id: int | None,
     if tag:
         return f"@{tag}"
     return f"id{user_id}" if user_id else "боец"
+
+
+async def quote_name(session: AsyncSession, user_id: int | None, username: str | None) -> str:
+    """Живое ФИО и для старых цитат со старым тегом или без привязки анкеты."""
+    name = await fio_name(session, user_id, username)
+    if name:
+        return name
+    # У анкеты может не быть activist_links, но статистика знает актуальный
+    # тег того же Telegram-id. Старый тег цитаты менять в базе не требуется.
+    person = await session.get(StatsUser, user_id) if user_id else None
+    tag = (username or "").strip().lstrip("@").lower()
+    if person is None and not user_id and tag:
+        person = (await session.execute(select(StatsUser).where(
+            func.lower(func.trim(func.replace(StatsUser.username, "@", ""))) == tag
+        ).limit(1))).scalars().first()
+    if person:
+        name = await fio_name(session, person.user_id, person.username)
+        if name:
+            return name
+    return _QUOTE_ALIASES.get(tag) or (username or "").strip().lstrip("@") or "чат"

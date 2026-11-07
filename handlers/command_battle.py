@@ -32,6 +32,7 @@ from utils.format import DIVIDER
 from utils.names import display_name
 from utils.quote_render import quote_author, render_one, stack
 from utils.stats import plural
+from database.quote_media import QuoteContent
 
 battle_router = Router()
 
@@ -113,11 +114,15 @@ async def _show_round(bot: Bot, battle, dao: BattleDAO) -> bool:
             continue  # цитату снесли посреди сессии — берём следующую пару
         img = await _compose(bot, quotes[left], quotes[right])
         img.seek(0)
+        kb = _kb(battle.id, battle.round)
+        for label, qid in (("Смотреть верхнюю", left), ("Смотреть нижнюю", right)):
+            if await dao.session.get(QuoteContent, qid):
+                kb.inline_keyboard.append([InlineKeyboardButton(text=label, callback_data=f"qm:view:{qid}")])
         await _swap(
             bot, battle, dao,
             BufferedInputFile(img.read(), filename=f"battle_{battle.round + 1}.png"),
             _caption(battle.round + 1),
-            _kb(battle.id, battle.round),
+            kb,
         )
         return True
 

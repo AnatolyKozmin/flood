@@ -96,7 +96,10 @@ class BattleDAO:
         self.session = session
 
     async def quote_ids(self) -> list[int]:
-        return [q for (q,) in (await self.session.execute(select(Quotes.id))).all()]
+        from database.quote_media import QuoteJob
+        query = select(Quotes.id).where(~select(QuoteJob.id).where(
+            QuoteJob.quote_id == Quotes.id, QuoteJob.state != "done").exists())
+        return [q for (q,) in (await self.session.execute(query)).all()]
 
     async def quotes_by_ids(self, ids: list[int]) -> dict[int, Quotes]:
         if not ids:

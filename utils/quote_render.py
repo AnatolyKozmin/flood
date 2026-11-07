@@ -11,8 +11,10 @@ from aiogram import Bot
 
 from database.engine import async_session_maker
 from utils.create_quote import render_quote_pages
-from utils.names import fio_name
+from utils.names import quote_name
 from utils.telegram_avatar import avatar_at
+from database.quote_media import QuoteContent
+from utils.media_quote import content_preview
 
 # Отступ между двумя цитатами на картинке батла.
 _GAP = 18
@@ -26,11 +28,7 @@ async def quote_author(quote) -> str:
     except (TypeError, ValueError):
         uid = None
     async with async_session_maker() as session:
-        name = await fio_name(session, uid, quote.tg_username)
-    if name:
-        return name
-    tag = (quote.tg_username or "").lstrip("@")
-    return tag or "чат"
+        return await quote_name(session, uid, quote.tg_username)
 
 
 async def quote_avatar(bot: Bot, quote) -> Image.Image | None:
@@ -47,6 +45,10 @@ async def render_one(bot: Bot, quote, loop) -> io.BytesIO:
     невпихуемое — обрезаем с многоточием, топ падать не должен."""
     author = await quote_author(quote)
     avatar = await quote_avatar(bot, quote)
+    async with async_session_maker() as session:
+        content = await session.get(QuoteContent, quote.id)
+    if content is not None:
+        return await content_preview(bot, content.parts, author, avatar)
 
     def _render(text: str) -> list:
         return render_quote_pages(

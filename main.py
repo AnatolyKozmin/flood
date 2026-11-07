@@ -32,6 +32,9 @@ from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from middlewares.dead_mute import DeadMuteMiddleware
 from middlewares.admin_promote import AdminPromoteMiddleware
 from middlewares.dm_contacts import DMContactsMiddleware
+from middlewares.quote_history import QuoteHistoryMiddleware
+from handlers.command_quote_chain import chain_router
+from utils.quote_worker import quote_worker
 from database.engine import init_db, close_db
 from database.feature_dao import ensure_defaults
 from utils.duel_scheduler import duel_worker
@@ -43,8 +46,9 @@ load_dotenv()
 bot = Bot(token=os.getenv('TOKEN'))
 dp = Dispatcher()
 
-# Анкета в личке идёт первой: пока человек отвечает на вопросы, её
-# FSM-хендлер должен ловить сообщения раньше остальных команд.
+# Сборка цитат срабатывает только вне FSM. Во время анкеты её хендлеры
+# по-прежнему получают ответы раньше прочих команд/чек-листов.
+dp.include_router(chain_router)
 dp.include_router(profile_router)
 # Фото в личке — к чек-листу «Найди того, кто…», если он у человека есть.
 dp.include_router(checklist_router)
@@ -77,6 +81,17 @@ dp.include_router(all_router)
 # Мёртвые молчат: идёт первой, чтобы сообщения погибших не считались
 # в статистику и не срабатывали командами, а просто удалялись.
 dp.message.outer_middleware(DeadMuteMiddleware())
+dp.message.outer_middleware(QuoteHistoryMiddleware())
+
+
+@dp.edited_message()
+async def remember_edited_quote_message(message):
+    if message.chat.type in {"group", "supergroup"}:
+        from database.quote_media import remember_message
+        from database.engine import async_session_maker
+        async with async_session_maker() as session:
+            await remember_message(session, message)
+            await session.commit()
 
 # Считает сообщения для !топ и !стата. outer — значит срабатывает раньше
 # фильтров: считаются все сообщения, а не только те, что попали в команды.
@@ -94,15 +109,18 @@ async def main():
     await ensure_defaults()
     duel_task = asyncio.create_task(duel_worker(bot))
     remind_task = asyncio.create_task(remind_worker(bot))
+    quotes_task = asyncio.create_task(quote_worker(bot))
     # ДР: поздравления с днём рождения. Как включить — см. utils/birthday.py
     # ДР: birthday_task = asyncio.create_task(birthday_worker(bot))
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.delete_webhook(drop_pending_updates=False)
         await setup_menu_button(bot)
         await dp.start_polling(bot)
     finally:
         duel_task.cancel()
         remind_task.cancel()
+        quotes_task.cancel()
+        await asyncio.gather(duel_task, remind_task, quotes_task, return_exceptions=True)
         # ДР: birthday_task.cancel()
         await flush_stats()  # дописать счётчики, что не успели уйти в базу
         await close_db()

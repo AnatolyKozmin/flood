@@ -13,10 +13,14 @@ from database.engine import async_session_maker
 from database.feature_dao import feature_off_text, feature_on
 from utils.create_quote import render_quote_pages
 from handlers.command_quotes_top import vote_kb
-from utils.names import fio_name
+from utils.names import quote_name
+from utils.quote_render import quote_author, quote_avatar
 from utils.helpers import msk_now
-from utils.telegram_avatar import avatar_at, snapshot_avatar
+from utils.telegram_avatar import snapshot_avatar
 from utils import voice_transcribe
+from database.quote_media import message_part
+from handlers.command_quote_chain import queue_message
+from utils.quote_worker import show_content
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +174,7 @@ async def _build_and_send(message: Message, tg_id: str, tg_username: str,
 
     async def _db_lookup():
         async with async_session_maker() as session:
-            return await fio_name(session, avatar_uid, tg_username)
+            return await quote_name(session, avatar_uid, tg_username)
 
     image_author, avatar = await asyncio.gather(_db_lookup(), _avatar())
     if not image_author:
@@ -205,6 +209,9 @@ async def save_quote(message: Message):
         return
 
     replied = message.reply_to_message
+    if replied.photo or replied.video or replied.animation or replied.video_note:
+        await queue_message(message, [message_part(replied)])
+        return
     text_body = _quoted_text(replied)
     caption_html: str | None = None
 
@@ -258,7 +265,7 @@ async def save_quote(message: Message):
     await _build_and_send(message, tg_id, tg_username, text_body, caption_html)
 
 
-@quotes_router.message(F.voice | F.video_note)
+@quotes_router.message(F.voice)
 async def save_voice_quote(message: Message):
     """Голосовое или кружок с подписью «!цитата»: распознать и в цитату.
     Чужие голосовые без подписи молча пропускаем."""
@@ -320,24 +327,11 @@ async def random_wisdom(message: Message):
         await message.reply("Пока нет ни одной цитаты. Сначала кто-нибудь использует !цитата 🙂")
         return
 
-    tg_username_clean = q.tg_username.lstrip("@") if q.tg_username else None
-    try:
-        uid = int(q.tg_id)
-    except (ValueError, TypeError):
-        uid = None
+    if await show_content(message.bot, message.chat.id, q.id, message.message_thread_id):
+        return
 
-    async def _get_activist():
-        async with async_session_maker() as session:
-            return await fio_name(session, uid, tg_username_clean)
-
-    async def _get_avatar():
-        if uid is None:
-            return None
-        return await avatar_at(message.bot, uid, q.created_at)
-
-    activist, avatar = await asyncio.gather(_get_activist(), _get_avatar())
-
-    image_author = activist or (tg_username_clean or "чат")
+    image_author, avatar = await asyncio.gather(
+        quote_author(q), quote_avatar(message.bot, q))
     loop = asyncio.get_event_loop()
     try:
         pngs = await loop.run_in_executor(

@@ -25,6 +25,7 @@ from database.quotes_extra_dao import BattleDAO, VotesDAO
 from utils.format import DIVIDER
 from utils.helpers import moscow_today
 from utils.quote_render import quote_author, render_one
+from database.quote_media import QuoteContent
 from utils.stats import plural
 
 quotes_top_router = Router()
@@ -69,10 +70,16 @@ async def cb_vote(call: CallbackQuery):
 
     async with async_session_maker() as session:
         added, total = await VotesDAO(session).toggle(quote_id, call.from_user.id)
+        content = await session.get(QuoteContent, quote_id)
 
     await call.answer("Голос учтён ❤️" if added else "Голос снял")
     try:
-        await call.message.edit_reply_markup(reply_markup=vote_kb(quote_id, total))
+        if content:
+            from utils.quote_worker import quote_buttons
+            kb = quote_buttons(quote_id, total, view=True)
+        else:
+            kb = vote_kb(quote_id, total)
+        await call.message.edit_reply_markup(reply_markup=kb)
     except TelegramBadRequest:
         pass  # разметка не изменилась — не страшно
 
@@ -182,6 +189,17 @@ async def _send_album(message: Message, pngs: list, caption: str) -> None:
     await message.answer_media_group(media)
 
 
+async def media_links(message, quote_ids):
+    async with async_session_maker() as session:
+        from sqlalchemy import select
+        ids = set((await session.execute(select(QuoteContent.quote_id).where(
+            QuoteContent.quote_id.in_(quote_ids)))).scalars().all())
+    if ids:
+        buttons = [[InlineKeyboardButton(text=f"Смотреть цитату #{qid}", callback_data=f"qm:view:{qid}")]
+                   for qid in quote_ids if qid in ids]
+        await message.answer("Полные цитаты:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
 @quotes_top_router.message(TopOf(QUOTE_WORDS))
 async def top_quotes(message: Message):
     if not await feature_on("quotes_top"):
@@ -224,6 +242,7 @@ async def top_quotes(message: Message):
 
     caption = _caption([f"🏆 <b>Топ цитат</b> — {title}", DIVIDER], entries)
     await _send_album(message, pngs, caption)
+    await media_links(message, [qid for qid, _ in board])
     await _drop_note(note)
 
 
@@ -264,4 +283,5 @@ async def top_battle(message: Message):
              f"{plural(played, 'батл', 'батла', 'батлов')}.</i>"],
     )
     await _send_album(message, pngs, caption)
+    await media_links(message, [row[0] for row in board])
     await _drop_note(note)

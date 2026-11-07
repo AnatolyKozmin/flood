@@ -40,5 +40,5 @@ class Quotes(Base):
 
     text_of_quotes: Mapped[str] = mapped_column()
     # Когда сохранили: по ней подбираем аватарку того времени. У старых —
-    # NULL, тогда берём последнюю доступную.
+    # NULL: историческую Telegram-аватарку достоверно выбрать нельзя.
     created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
