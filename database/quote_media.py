@@ -1,7 +1,7 @@
 """Дополнительные таблицы цитат: старые quotes и голоса не меняются."""
 import time
 
-from sqlalchemy import JSON, BigInteger, Boolean, Integer, String, select, delete
+from sqlalchemy import JSON, BigInteger, Boolean, Integer, String, select, delete, and_, or_
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -142,6 +142,9 @@ def validate_parts(parts):
 async def prune_history(session):
     # Сохранённые цитаты содержат собственный снимок частей и не зависят от журнала.
     cutoff = int(time.time()) - 90 * 86400
-    await session.execute(delete(QuoteMessage).where(QuoteMessage.seen_at < cutoff))
+    await session.execute(delete(QuoteMessage).where(or_(
+        QuoteMessage.seen_at < cutoff,
+        and_(QuoteMessage.chat_id > 0, QuoteMessage.seen_at < int(time.time()) - 86400),
+    )))
     await session.execute(delete(QuoteDraft).where(QuoteDraft.updated_at < int(time.time()) - 86400))
     await session.execute(delete(QuotePending).where(QuotePending.created_at < int(time.time()) - 86400))

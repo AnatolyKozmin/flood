@@ -32,7 +32,7 @@ from middlewares.message_counter import MessageCounterMiddleware, flush_stats
 from middlewares.dead_mute import DeadMuteMiddleware
 from middlewares.admin_promote import AdminPromoteMiddleware
 from middlewares.dm_contacts import DMContactsMiddleware
-from middlewares.quote_history import QuoteHistoryMiddleware
+from middlewares.quote_history import QuoteHistoryMiddleware, record_quote_message
 from handlers.command_quote_chain import chain_router
 from utils.quote_worker import quote_worker
 from database.engine import init_db, close_db
@@ -85,13 +85,8 @@ dp.message.outer_middleware(QuoteHistoryMiddleware())
 
 
 @dp.edited_message()
-async def remember_edited_quote_message(message):
-    if message.chat.type in {"group", "supergroup"}:
-        from database.quote_media import remember_message
-        from database.engine import async_session_maker
-        async with async_session_maker() as session:
-            await remember_message(session, message)
-            await session.commit()
+async def remember_edited_quote_message(message, raw_state=None):
+    await record_quote_message(message, raw_state)
 
 # Считает сообщения для !топ и !стата. outer — значит срабатывает раньше
 # фильтров: считаются все сообщения, а не только те, что попали в команды.

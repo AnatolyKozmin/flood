@@ -250,14 +250,57 @@ class ChainDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job.state, "pending")
             self.assertEqual(job.chat_id, -100456)
 
-    async def test_journal_is_not_written_for_unrelated_private_messages(self):
+    async def test_private_chain_reaches_root_through_middleware(self):
         from middlewares.quote_history import QuoteHistoryMiddleware
+        private = dict(chat={"id": 42, "type": "private"})
         with patch("middlewares.quote_history.async_session_maker", self.maker):
             handler = AsyncMock(return_value="next")
-            result = await QuoteHistoryMiddleware()(handler, message(1, "личное", chat={"id": 42, "type": "private"}), {})
-            self.assertEqual(result, "next")
+            root = message(1, "проверка", **private)
+            reply = message(2, "хуерка", root, **private)
+            command = message(3, "/цитата", message(2, "хуерка", **private), **private)
+            for item in (root, reply, command):
+                self.assertEqual(await QuoteHistoryMiddleware()(handler, item, {"raw_state": None}), "next")
+            with patch.object(Message, "answer", AsyncMock()) as answer:
+                await chain.chain_quote(command)
+                answer.assert_not_awaited()
+        async with self.maker() as session:
+            quote = (await session.execute(select(Quotes))).scalars().one()
+            self.assertEqual(quote.text_of_quotes, "проверка хуерка")
+            parts, complete = await collect_chain(session, 42, 2)
+            self.assertTrue(complete)
+            self.assertEqual([p["text"] for p in parts], ["проверка", "хуерка"])
+
+    async def test_private_form_answers_are_not_archived(self):
+        from middlewares.quote_history import QuoteHistoryMiddleware
+        with patch("middlewares.quote_history.async_session_maker", self.maker):
+            handler = AsyncMock()
+            await QuoteHistoryMiddleware()(handler, message(1, "анкета", chat={"id": 42, "type": "private"}), {"raw_state": "Form:answer"})
+            handler.assert_awaited_once()
         async with self.maker() as session:
             self.assertEqual(list((await session.execute(select(QuoteMessage))).scalars()), [])
+
+    async def test_private_edits_preserve_parent_chain(self):
+        from middlewares.quote_history import record_quote_message
+        private = dict(chat={"id": 42, "type": "private"})
+        with patch("middlewares.quote_history.async_session_maker", self.maker):
+            await record_quote_message(message(1, "исходник", **private))
+            await record_quote_message(message(2, "ответ", message(1, "исходник", **private), **private))
+            await record_quote_message(message(1, "исправленный текст", **private))
+        async with self.maker() as session:
+            parts, complete = await collect_chain(session, 42, 2)
+            self.assertTrue(complete)
+            self.assertEqual(parts[0]["text"], "исправленный текст")
+
+    async def test_private_history_expires_in_a_day_group_history_in_90_days(self):
+        async with self.maker() as session:
+            for chat in (42, -100123):
+                session.add(QuoteMessage(chat_id=chat, message_id=1, parent_id=None,
+                                         ancestry_known=True, payload={}, seen_at=int(time.time()) - 2 * 86400))
+            await session.commit()
+            await prune_history(session)
+            await session.commit()
+            self.assertIsNone(await session.get(QuoteMessage, (42, 1)))
+            self.assertIsNotNone(await session.get(QuoteMessage, (-100123, 1)))
 
     async def test_cyrillic_command_and_english_alias_filter(self):
         command_filter = chain.ChainCommand()
