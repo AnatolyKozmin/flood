@@ -6,7 +6,7 @@ init_db() зовёт Base.metadata.create_all(), а сюда мы попадае
 """
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.models import Base
@@ -29,6 +29,19 @@ class QuoteVote(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     quote_id: Mapped[int] = mapped_column(Integer)
     user_id: Mapped[int] = mapped_column(BigInteger)
+    voted_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class QuoteReaction(Base):
+    """Один выбор человека на показ цитаты, включая все части показа."""
+
+    __tablename__ = "quote_reactions"
+    __table_args__ = (CheckConstraint("value IN (-1, 1)"),)
+
+    quote_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    display_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    value: Mapped[int] = mapped_column(Integer)
     voted_at: Mapped[datetime] = mapped_column(DateTime)
 
 

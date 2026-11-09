@@ -25,6 +25,7 @@ OFF = 100_000    # временный зазор для сдвига без ко
 
 REFS = [
     ("quote_votes", "quote_id"),
+    ("quote_reactions", "quote_id"),
     ("quote_ratings", "quote_id"),
     ("battle_rounds", "left_id"),
     ("battle_rounds", "right_id"),

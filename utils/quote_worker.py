@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import hashlib
+import secrets
 import tempfile
 import time
 from pathlib import Path
@@ -56,12 +57,18 @@ async def enqueue(parts, chat_id, user_id, source_key, thread_id=None):
         return quote.id
 
 
-def quote_buttons(quote_id, votes=0, *, view=False):
-    # Импортировать хендлер здесь нельзя: quote_render также читает QuoteContent.
-    buttons = [InlineKeyboardButton(text=f"❤️ {votes}" if votes else "❤️", callback_data=f"qv:{quote_id}")]
-    if view:
-        buttons.append(InlineKeyboardButton(text="Смотреть цитату", callback_data=f"qm:view:{quote_id}"))
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+def quote_buttons(quote_id: int, votes: tuple[int, int] = (0, 0), *, display_id: str | None = None):
+    display_id = display_id or secrets.token_hex(8)
+    likes, dislikes = votes
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"❤️ {likes}", callback_data=f"qr:{quote_id}:{display_id}:like"),
+        InlineKeyboardButton(text=f"👎 {dislikes}", callback_data=f"qr:{quote_id}:{display_id}:dislike"),
+    ]])
+
+
+def job_display_id(job, key: str) -> str:
+    # Возобновление очереди сохраняет тот же показ для всех частей.
+    return f"j{job.id}-{key[:10]}" if job else "view"
 
 
 def render_key(author, avatar):
@@ -95,12 +102,12 @@ async def send_with_retry(bot, chat_id, kind, file, thread_id=None, reply_markup
             await asyncio.sleep(error.retry_after + 1)
 
 
-async def show_content(bot, chat_id, quote_id, thread_id=None):
+async def show_content(bot, chat_id, quote_id, thread_id=None, *, fresh_vote=True):
     async with async_session_maker() as session:
         content = await session.get(QuoteContent, quote_id)
         quote = await session.get(Quotes, quote_id)
         job = (await session.execute(select(QuoteJob).where(QuoteJob.quote_id == quote_id))).scalars().first()
-        votes = await VotesDAO(session).count(quote_id)
+        votes = await VotesDAO(session).rating(quote_id)
     if content is None or quote is None:
         return False
     if job and job.state != "done":
@@ -128,9 +135,11 @@ async def show_content(bot, chat_id, quote_id, thread_id=None):
         wakeup.set()
         await bot.send_message(chat_id, "Обновляю оформление цитаты. Повтори просмотр после обработки.", message_thread_id=thread_id)
         return True
+    display_id = None if fresh_vote else job_display_id(job, content.render_key)
+    keyboard = quote_buttons(quote_id, votes, display_id=display_id)
     for output in content.outputs:
         await send_with_retry(bot, chat_id, output["kind"], output["file_id"], thread_id,
-                              quote_buttons(quote_id, votes))
+                              keyboard)
     return True
 
 
@@ -139,7 +148,7 @@ async def process_job(bot, job):
         quote = await session.get(Quotes, job.quote_id)
         content = await session.get(QuoteContent, job.quote_id)
         parts, outputs = content.parts, list(content.outputs)
-        votes = await VotesDAO(session).count(job.quote_id)
+        votes = await VotesDAO(session).rating(job.quote_id)
         uid = await quote_user_id(session, quote.tg_id, quote.tg_username)
         author = await quote_name(session, uid, quote.tg_username)
     # Запись создания немного раньше снятия фото: для новой цитаты используем
@@ -149,20 +158,22 @@ async def process_job(bot, job):
         await snapshot_avatar(bot, uid)
         saved_at = msk_now()
     avatar = await avatar_at(bot, uid, saved_at) if uid else await _profile_avatar(bot, None, quote.tg_username)
+    key = render_key(author, avatar)
     async with async_session_maker() as session:
         row = await session.get(QuoteContent, job.quote_id)
         if not row.render_key:
             saved_quote = await session.get(Quotes, job.quote_id)
             saved_quote.created_at = saved_at or msk_now()
-        row.render_key = render_key(author, avatar)
+        row.render_key = key
         await session.commit()
     output_index = 0
+    keyboard = quote_buttons(job.quote_id, votes, display_id=job_display_id(job, key))
 
     async def emit(kind, file):
         nonlocal output_index, outputs
         if output_index >= len(outputs):
             fid = await send_with_retry(bot, job.chat_id, kind, file, job.thread_id,
-                                       quote_buttons(job.quote_id, votes))
+                                       keyboard)
             outputs.append(dict(kind=kind, file_id=fid))
             async with async_session_maker() as session:
                 row = await session.get(QuoteContent, job.quote_id)

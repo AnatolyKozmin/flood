@@ -2,12 +2,13 @@
 import random
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import case, delete, func, literal, select, text, union_all
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Quotes
-from database.quotes_extra_models import BattleRound, BattleSession, QuoteVote
+from database.quotes_extra_models import BattleRound, BattleSession, QuoteReaction, QuoteVote
 from utils.helpers import MSK
 
 BATTLE_ROUNDS = 10
@@ -71,18 +72,50 @@ class VotesDAO:
         rows = (await self.session.execute(query)).all()
         return {row.quote_id: int(row.n) for row in rows}
 
-    async def top(self, limit: int = 10, since: date | None = None) -> list[tuple[int, int]]:
-        """[(quote_id, голосов), ...] по убыванию."""
-        query = select(QuoteVote.quote_id, func.count().label("n"))
+    async def react(self, quote_id: int, display_id: str, user_id: int, value: int) -> None:
+        stmt = insert(QuoteReaction).values(quote_id=quote_id, display_id=display_id,
+                                           user_id=user_id, value=value, voted_at=_now())
+        await self.session.execute(stmt.on_conflict_do_update(
+            index_elements=[QuoteReaction.quote_id, QuoteReaction.display_id, QuoteReaction.user_id],
+            set_={"value": stmt.excluded.value, "voted_at": stmt.excluded.voted_at},
+            where=QuoteReaction.value != stmt.excluded.value,
+        ))
+        await self.session.commit()
+
+    @staticmethod
+    def _reactions(since: date | None = None, quote_id: int | None = None):
+        legacy = select(QuoteVote.quote_id, literal(1).label("value"))
+        current = select(QuoteReaction.quote_id, QuoteReaction.value)
         if since is not None:
-            query = query.where(QuoteVote.voted_at >= datetime.combine(since, datetime.min.time()))
-        query = (
-            query.group_by(QuoteVote.quote_id)
-            .order_by(func.count().desc(), QuoteVote.quote_id.desc())
-            .limit(limit)
-        )
-        rows = (await self.session.execute(query)).all()
-        return [(row.quote_id, int(row.n)) for row in rows]
+            start = datetime.combine(since, datetime.min.time())
+            legacy = legacy.where(QuoteVote.voted_at >= start)
+            current = current.where(QuoteReaction.voted_at >= start)
+        if quote_id is not None:
+            legacy = legacy.where(QuoteVote.quote_id == quote_id)
+            current = current.where(QuoteReaction.quote_id == quote_id)
+        return union_all(legacy, current).subquery()
+
+    async def rating(self, quote_id: int) -> tuple[int, int]:
+        votes = self._reactions(quote_id=quote_id)
+        likes, dislikes = (await self.session.execute(select(
+            func.count(case((votes.c.value == 1, 1))),
+            func.count(case((votes.c.value == -1, 1))),
+        ))).one()
+        return likes, dislikes
+
+    async def top(self, limit: int = 10, since: date | None = None, *, bottom: bool = False) -> list[tuple[int, int, int]]:
+        """Цитаты с положительным или отрицательным балансом за период."""
+        votes = self._reactions(since)
+        score = func.sum(votes.c.value)
+        query = select(votes.c.quote_id,
+                       func.count(case((votes.c.value == 1, 1))),
+                       func.count(case((votes.c.value == -1, 1))))
+        query = (query.join(Quotes, Quotes.id == votes.c.quote_id)
+                 .group_by(votes.c.quote_id)
+                 .having(score < 0 if bottom else score > 0)
+                 .order_by(score.asc() if bottom else score.desc(), votes.c.quote_id.desc())
+                 .limit(limit))
+        return [tuple(row) for row in (await self.session.execute(query)).all()]
 
     async def voted_by(self, quote_id: int, user_id: int) -> bool:
         query = select(QuoteVote.id).where(

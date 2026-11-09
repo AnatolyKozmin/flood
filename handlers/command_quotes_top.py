@@ -1,7 +1,4 @@
-"""Голосование за цитаты и топ: !топ цитат, !топ батл.
-
-Сердечко под цитатой ставится кнопкой, один человек — один голос на цитату
-(за этим следит уникальный индекс в quote_votes, см. quotes_extra_models).
+"""Голосование за показ цитаты, топ и антитоп цитат, топ батла.
 
 Топ выводится альбомом: одним сообщением с несколькими картинками телеграм
 не умеет, а альбом выглядит единым блоком и вмещает все 10 карточек в полном
@@ -21,12 +18,14 @@ from aiogram.types import (
 
 from database.engine import async_session_maker
 from database.feature_dao import feature_off_text, feature_on
+from database.models import Quotes
 from database.quotes_extra_dao import BattleDAO, VotesDAO
 from utils.format import DIVIDER
 from utils.helpers import moscow_today
 from utils.quote_render import quote_author, render_one
 from database.quote_media import QuoteContent
 from utils.stats import plural
+from utils.quote_worker import quote_buttons
 
 quotes_top_router = Router()
 
@@ -60,8 +59,17 @@ def vote_kb(quote_id: int, votes: int = 0) -> InlineKeyboardMarkup:
     ]])
 
 
+def _has_vote_button(call: CallbackQuery) -> bool:
+    return (isinstance(call.message, Message) and call.message.reply_markup is not None
+            and any(button.callback_data == call.data
+                    for row in call.message.reply_markup.inline_keyboard for button in row))
+
+
 @quotes_top_router.callback_query(F.data.startswith(f"{VOTE_CB}:"))
 async def cb_vote(call: CallbackQuery):
+    if not _has_vote_button(call):
+        await call.answer("Карточка недоступна.")
+        return
     try:
         quote_id = int(call.data.split(":")[1])
     except (IndexError, ValueError):
@@ -69,19 +77,43 @@ async def cb_vote(call: CallbackQuery):
         return
 
     async with async_session_maker() as session:
+        if await session.get(Quotes, quote_id) is None:
+            await call.answer("Цитата удалена.")
+            return
         added, total = await VotesDAO(session).toggle(quote_id, call.from_user.id)
-        content = await session.get(QuoteContent, quote_id)
 
     await call.answer("Голос учтён ❤️" if added else "Голос снял")
     try:
-        if content:
-            from utils.quote_worker import quote_buttons
-            kb = quote_buttons(quote_id, total)
-        else:
-            kb = vote_kb(quote_id, total)
-        await call.message.edit_reply_markup(reply_markup=kb)
+        await call.message.edit_reply_markup(reply_markup=vote_kb(quote_id, total))
     except TelegramBadRequest:
         pass  # разметка не изменилась — не страшно
+
+
+@quotes_top_router.callback_query(F.data.startswith("qr:"))
+async def cb_react(call: CallbackQuery):
+    if not _has_vote_button(call):
+        await call.answer("Карточка недоступна.")
+        return
+    try:
+        _, raw_id, display_id, choice = call.data.split(":")
+        quote_id = int(raw_id)
+        value = {"like": 1, "dislike": -1}[choice]
+    except (ValueError, KeyError):
+        await call.answer()
+        return
+
+    async with async_session_maker() as session:
+        if await session.get(Quotes, quote_id) is None:
+            await call.answer("Цитата удалена.")
+            return
+        dao = VotesDAO(session)
+        await dao.react(quote_id, display_id, call.from_user.id, value)
+        rating = await dao.rating(quote_id)
+    await call.answer("Лайк учтён" if value == 1 else "Дизлайк учтён")
+    try:
+        await call.message.edit_reply_markup(reply_markup=quote_buttons(quote_id, rating, display_id=display_id))
+    except TelegramBadRequest:
+        pass
 
 
 # ─────────────────────────── команда ───────────────────────────
@@ -89,14 +121,15 @@ async def cb_vote(call: CallbackQuery):
 class TopOf(BaseFilter):
     """«!топ цитат ...» и «!топ батл ...» — ловим раньше обычного !топ."""
 
-    def __init__(self, words: set[str]) -> None:
+    def __init__(self, words: set[str], commands: tuple[str, ...] = ("!топ",)) -> None:
         self.words = words
+        self.commands = commands
 
     async def __call__(self, message: Message) -> bool:
         if not message.text:
             return False
         parts = message.text.strip().casefold().split()
-        return len(parts) >= 2 and parts[0] == "!топ" and parts[1] in self.words
+        return len(parts) >= 2 and parts[0] in self.commands and parts[1] in self.words
 
 
 def _period(words: list[str]) -> tuple[int | None, str] | None:
@@ -200,17 +233,18 @@ async def media_links(message, quote_ids):
         await message.answer("Полные цитаты:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
-@quotes_top_router.message(TopOf(QUOTE_WORDS))
+@quotes_top_router.message(TopOf(QUOTE_WORDS, ("!топ", "!антитоп", "!анти-топ")))
 async def top_quotes(message: Message):
     if not await feature_on("quotes_top"):
         await message.reply(await feature_off_text("quotes_top"))
         return
-    period = _period(message.text.strip().casefold().split())
+    words = message.text.strip().casefold().split()
+    bottom = words[0] != "!топ"
+    period = _period(words)
     if period is None:
         await message.reply(
-            "Не понял период. Так можно:\n"
-            "<code>!топ цитат</code> · <code>!топ цитат неделя</code> · "
-            "<code>!топ цитат месяц</code>",
+            "Не понял период. Можно указать «неделя» или «месяц».\n"
+            f"<code>{words[0]} цитат неделя</code>",
             parse_mode="HTML",
         )
         return
@@ -219,30 +253,31 @@ async def top_quotes(message: Message):
     since = None if days_back is None else moscow_today() - timedelta(days=days_back)
 
     async with async_session_maker() as session:
-        board = await VotesDAO(session).top(TOP_LIMIT, since)
+        board = await VotesDAO(session).top(TOP_LIMIT, since, bottom=bottom)
         if not board:
             await message.reply(
-                "За цитаты ещё никто не голосовал. Жми ❤️ под цитатой — "
-                "и она попадёт в топ."
+                "За этот период нет цитат с отрицательным рейтингом."
+                if bottom else "За этот период нет цитат с положительным рейтингом."
             )
             return
-        quotes = await BattleDAO(session).quotes_by_ids([qid for qid, _ in board])
+        quotes = await BattleDAO(session).quotes_by_ids([qid for qid, *_ in board])
 
-    board = [(qid, n) for qid, n in board if qid in quotes]
+    board = [row for row in board if row[0] in quotes]
     note = await message.answer("Собираю топ, секунду…")
 
-    pngs = await _render_all(message.bot, [quotes[qid] for qid, _ in board])
-    authors = await asyncio.gather(*(quote_author(quotes[qid]) for qid, _ in board))
+    pngs = await _render_all(message.bot, [quotes[qid] for qid, *_ in board])
+    authors = await asyncio.gather(*(quote_author(quotes[qid]) for qid, *_ in board))
 
     entries = []
-    for place, ((quote_id, votes), author) in enumerate(zip(board, authors), start=1):
+    for place, ((quote_id, likes, dislikes), author) in enumerate(zip(board, authors), start=1):
         medal = MEDALS.get(place, f"{place}.")
-        entries.append((f"{medal} <b>{html.escape(author)}</b> — {votes} ❤️",
+        entries.append((f"{medal} <b>{html.escape(author)}</b> — {likes - dislikes:+d} · ❤️ {likes} · 👎 {dislikes}",
                         quotes[quote_id].text_of_quotes))
 
-    caption = _caption([f"🏆 <b>Топ цитат</b> — {title}", DIVIDER], entries)
+    heading = "👎 <b>Антитоп цитат</b>" if bottom else "🏆 <b>Топ цитат</b>"
+    caption = _caption([f"{heading} — {title}", DIVIDER], entries)
     await _send_album(message, pngs, caption)
-    await media_links(message, [qid for qid, _ in board])
+    await media_links(message, [qid for qid, *_ in board])
     await _drop_note(note)
 
 

@@ -205,5 +205,5 @@ async def view_quote(call: CallbackQuery):
             if _views[uid] < cutoff:
                 del _views[uid]
     await call.answer()
-    if not await show_content(call.bot, call.message.chat.id, qid, call.message.message_thread_id):
+    if not await show_content(call.bot, call.message.chat.id, qid, call.message.message_thread_id, fresh_vote=False):
         await call.message.answer("Цитата не найдена.")

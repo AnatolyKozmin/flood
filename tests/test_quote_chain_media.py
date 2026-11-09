@@ -142,7 +142,12 @@ class ChainDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await worker.process_job(bot, job)
         self.assertEqual(bot.send_photo.await_count, 1)
         kwargs = bot.send_photo.call_args.kwargs
-        self.assertEqual(kwargs["reply_markup"].inline_keyboard[0][0].callback_data, f"qv:{qid}")
+        buttons = kwargs["reply_markup"].inline_keyboard[0]
+        self.assertEqual([button.text for button in buttons], ["❤️ 0", "👎 0"])
+        like, dislike = (button.callback_data.split(":") for button in buttons)
+        self.assertEqual(like[:3], dislike[:3])
+        self.assertEqual(like[:2], ["qr", str(qid)])
+        self.assertEqual((like[3], dislike[3]), ("like", "dislike"))
         self.assertNotIn("caption", kwargs)
         bot.send_message.assert_not_awaited()
         async with self.maker() as session:

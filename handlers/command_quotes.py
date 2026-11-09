@@ -12,7 +12,6 @@ from database.quotes_extra_dao import VotesDAO
 from database.engine import async_session_maker
 from database.feature_dao import feature_off_text, feature_on
 from utils.create_quote import render_quote_pages
-from handlers.command_quotes_top import vote_kb
 from utils.names import quote_name
 from utils.quote_render import quote_author, quote_avatar
 from utils.helpers import msk_now
@@ -20,7 +19,7 @@ from utils.telegram_avatar import snapshot_avatar
 from utils import voice_transcribe
 from database.quote_media import message_part
 from handlers.command_quote_chain import queue_message
-from utils.quote_worker import show_content
+from utils.quote_worker import quote_buttons, show_content
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +45,13 @@ QUOTE_ALBUM_MAX = 10
 
 
 async def _send_quote_pngs(message: Message, pngs: list, caption_html: str | None = None,
-                          quote_id: int | None = None, votes: int = 0) -> None:
+                          quote_id: int | None = None, votes: tuple[int, int] = (0, 0)) -> None:
     if not pngs:
         return
     parse_mode = "HTML" if caption_html else None
     # Кнопка голосования (см. handlers/command_quotes_top.py). У альбомов
     # инлайн-клавиатур не бывает — для них кнопка уходит отдельным сообщением.
-    kb = vote_kb(quote_id, votes) if quote_id is not None else None
+    kb = quote_buttons(quote_id, votes) if quote_id is not None else None
     if len(pngs) == 1:
         pngs[0].seek(0)
         await message.answer_photo(
@@ -321,7 +320,7 @@ async def random_wisdom(message: Message):
         return
     async with async_session_maker() as session:
         q = await QuotesDAO(session).get_random_quote()
-        votes = await VotesDAO(session).count(q.id) if q else 0
+        votes = await VotesDAO(session).rating(q.id) if q else (0, 0)
 
     if not q:
         await message.reply("Пока нет ни одной цитаты. Сначала кто-нибудь использует !цитата 🙂")
